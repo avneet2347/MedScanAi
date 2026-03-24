@@ -1,26 +1,80 @@
-@import "tailwindcss";
+/* Theme colors */
 
-:root {
-  --background: #ffffff;
-  --foreground: #171717;
+body.dark {
+  background: #0f172a;
+  color: white;
 }
 
-@theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+body.light {
+  background: white;
+  color: #111827;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+/* Navbar */
+
+.navbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 18px 60px;
 }
 
-body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+/* Logo */
+
+.logo {
+  font-size: 22px;
+  font-weight: 600;
+}
+
+.badge {
+  background: #3b82f6;
+  padding: 4px 8px;
+  border-radius: 6px;
+  margin-left: 6px;
+  font-size: 12px;
+  color: white;
+}
+
+/* Links */
+
+.nav-links {
+  display: flex;
+  gap: 40px;
+}
+
+/* Right actions */
+
+.nav-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.status {
+  background: #dcfce7;
+  color: #166534;
+  padding: 6px 12px;
+  border-radius: 20px;
+}
+
+body.dark .status {
+  background: #064e3b;
+  color: #a7f3d0;
+}
+
+/* Buttons */
+
+.signin {
+  background: transparent;
+  border: 1px solid #cbd5e1;
+}
+
+.start {
+  background: #021c3a;
+  color: white;
+}
+
+.theme-toggle {
+  border-radius: 6px;
+  padding: 6px 10px;
 }
