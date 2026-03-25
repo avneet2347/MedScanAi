@@ -1,100 +1,103 @@
-import { NextRequest, NextResponse } from "next/server";
-import tesseract from "node-tesseract-ocr";
-import fs from "fs";
-import path from "path";
-import { fromPath } from "pdf2pic";
-import { analyzeMedicalText } from "@/services/aiService";
+import { NextResponse } from "next/server";
+import {
+  getErrorMessage,
+  getErrorStatus,
+  isAllowedUploadMimeType,
+  jsonError,
+} from "@/lib/api-utils";
+import { generateHealthInsights } from "@/lib/insights";
+import { normalizeOutputLanguage } from "@/lib/localization";
+import { generateMedicalAnalysis } from "@/lib/openai-service";
+import { extractTextFromDocument } from "@/lib/ocr-service";
+import { createAuthenticityProof } from "@/lib/report-authenticity";
+import { uploadReportForUser } from "@/lib/report-upload";
+import { ensureReportInsights } from "@/lib/report-pipeline";
+import { ensureUserProfile } from "@/lib/reports";
+import { serverConfig } from "@/lib/server-config";
+import { getOptionalAuthenticatedUser } from "@/lib/supabase-server";
 
-export async function POST(req: NextRequest) {
-  let filePath = "";
+export const runtime = "nodejs";
 
+export async function POST(request: Request) {
   try {
-    const formData = await req.formData();
-    const file = formData.get("file") as File;
+    const formData = await request.formData();
+    const file = formData.get("file");
+    const language = normalizeOutputLanguage(formData.get("language"));
 
-    if (!file) {
-      return NextResponse.json(
-        { error: "No file uploaded" },
-        { status: 400 }
+    if (!file || typeof file === "string") {
+      return jsonError("A file is required.");
+    }
+
+    if (!isAllowedUploadMimeType(file.type)) {
+      return jsonError("Only JPG, PNG, and PDF files are supported.");
+    }
+
+    if (file.size > serverConfig.maxUploadBytes) {
+      return jsonError(
+        `File size must be ${Math.round(serverConfig.maxUploadBytes / (1024 * 1024))}MB or less.`
       );
     }
 
-    // ✅ Allow image + PDF
-    if (
-      !file.type.startsWith("image/") &&
-      file.type !== "application/pdf"
-    ) {
-      return NextResponse.json(
-        { error: "Only image or PDF files allowed" },
-        { status: 400 }
+    const authState = await getOptionalAuthenticatedUser(request);
+
+    if (authState) {
+      const { user, dataClient } = authState;
+      await ensureUserProfile(dataClient, user);
+
+      const { report } = await uploadReportForUser(dataClient, user, file);
+
+      const { report: processedReport, insights } = await ensureReportInsights(
+        dataClient,
+        report.id,
+        user.id,
+        true
       );
-    }
 
-    const bytes = await file.arrayBuffer();
-    const buffer = Buffer.from(bytes);
-
-    // ✅ Fix extension dynamically
-    const ext = file.name.split(".").pop();
-    const fileName = `temp-${Date.now()}.${ext}`;
-    filePath = path.join(process.cwd(), fileName);
-
-    fs.writeFileSync(filePath, buffer);
-
-    // ✅ If PDF → convert to image
-    fs.writeFileSync(filePath, buffer);
-
-    // ✅ PDF → convert to image
-    if (file.type === "application/pdf") {
-      const converter = fromPath(filePath, {
-        density: 100,
-        saveFilename: "page",
-        savePath: process.cwd(),
-        format: "png",
-        width: 1024,
-        height: 1024,
+      return NextResponse.json({
+        success: true,
+        language,
+        report: processedReport,
+        extractedText: processedReport.ocr_text,
+        analysis: processedReport.analysis_json,
+        insights,
       });
-
-      const result = await converter(1);
-      filePath = result.path;
     }
 
-    // 🧠 OCR
-    let text = "";
-    try {
-      text = await tesseract.recognize(filePath, {
-        lang: "eng",
-        oem: 1,
-        psm: 3,
-      });
-    } catch (ocrError) {
-      console.error("OCR Error:", ocrError);
-      return NextResponse.json(
-        { error: "OCR failed" },
-        { status: 500 }
-      );
-    }
-
-    // 🤖 AI ANALYSIS
-    const analysis = await analyzeMedicalText(text);
+    const buffer = Buffer.from(await file.arrayBuffer());
+    const ocr = await extractTextFromDocument({
+      buffer,
+      filename: file.name || "report",
+      mimeType: file.type,
+    });
+    const analysis = await generateMedicalAnalysis({
+      extractedText: ocr.text,
+      language,
+    });
+    const authenticity = createAuthenticityProof({
+      fileBuffer: buffer,
+      ocrText: ocr.text,
+      analysis,
+    });
+    const insights = generateHealthInsights(analysis, {
+      language,
+      authenticity,
+    });
 
     return NextResponse.json({
       success: true,
-      extractedText: text,
+      language,
+      reportId: `local-${Date.now()}`,
+      filename: file.name || "report",
+      createdAt: new Date().toISOString(),
+      report: null,
+      extractedText: ocr.text,
       analysis,
+      insights,
     });
-
-  } 
-  catch (error: any) {
-  console.error("🔥 FULL ERROR:", error);
-
-  return NextResponse.json(
-    { error: error.message || "Processing failed" },
-    { status: 500 }
-  );
-}
- finally {
-    if (filePath && fs.existsSync(filePath)) {
-      fs.unlinkSync(filePath);
-    }
+  } catch (error) {
+    return jsonError(
+      getErrorMessage(error, "Processing failed."),
+      getErrorStatus(error, 500)
+    );
   }
 }

@@ -42,17 +42,26 @@ export default function Home() {
   const [file, setFile]         = useState<File | null>(null);
   const [dragging, setDragging] = useState(false);
   const [lang, setLang]         = useState<"en" | "hi" | "hinglish">("en");
-  const [dark, setDark]         = useState(false);
+  const [dark, setDark]         = useState(true);
   const [tick, setTick]         = useState(0);
-  const [mounted, setMounted]   = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
-    setMounted(true);
     const saved = localStorage.getItem("ms-theme");
-    if (saved === "dark") setDark(true);
+    let frameId: number | null = null;
+
+    if (saved === "light") {
+      frameId = window.requestAnimationFrame(() => setDark(false));
+    }
+
     const id = setInterval(() => setTick(t => t + 1), 40);
-    return () => clearInterval(id);
+
+    return () => {
+      clearInterval(id);
+      if (frameId !== null) {
+        window.cancelAnimationFrame(frameId);
+      }
+    };
   }, []);
 
   useEffect(() => {
@@ -70,7 +79,7 @@ export default function Home() {
     if (f) setFile(f);
   };
 
-  const ecgOffset = mounted ? (-(tick * 1.5) % 400) : 0;
+  const ecgOffset = -(tick * 1.5) % 400;
 
   return (
     <>
@@ -1106,7 +1115,7 @@ export default function Home() {
               <div className="lang-label">Output Language</div>
               <div className="lang-btns">
                 {(["en", "hi", "hinglish"] as const).map(l => (
-                  <button key={l} className={`lang-btn${lang === l ? " active" : ""}`} onClick={() => setLang(l)}>
+                  <button key={l} data-lang={l} className={`lang-btn${lang === l ? " active" : ""}`} onClick={() => setLang(l)}>
                     {l === "en" ? "🇬🇧 English" : l === "hi" ? "🇮🇳 Hindi" : "🤝 Hinglish"}
                   </button>
                 ))}

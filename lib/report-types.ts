@@ -1,0 +1,205 @@
+export type Json =
+  | string
+  | number
+  | boolean
+  | null
+  | { [key: string]: Json }
+  | Json[];
+
+export type RiskLevel = "low" | "moderate" | "high" | "critical";
+export type OutputLanguage = "en" | "hi" | "hinglish";
+export type TestStatus =
+  | "normal"
+  | "high"
+  | "low"
+  | "borderline"
+  | "abnormal"
+  | "unknown";
+
+export interface ConditionInsight {
+  name: string;
+  confidence: "low" | "medium" | "high";
+  evidence: string;
+  explanation: string;
+}
+
+export interface MedicineEntry {
+  name: string;
+  dosage: string;
+  frequency: string;
+  purpose: string;
+  notes: string;
+}
+
+export interface TestValueEntry {
+  name: string;
+  value: string;
+  unit: string;
+  referenceRange: string;
+  status: TestStatus;
+  explanation: string;
+}
+
+export interface TestEvaluation {
+  name: string;
+  metricKey: string;
+  value: string;
+  numericValue: number | null;
+  unit: string;
+  referenceRange: string;
+  status: TestStatus;
+  severity: RiskLevel;
+  isAbnormal: boolean;
+  explanation: string;
+  normalRangeSummary: string;
+}
+
+export interface RiskPrediction {
+  condition: string;
+  probability: number;
+  severity: RiskLevel;
+  rationale: string[];
+  preventiveSteps: string[];
+  suggestedSpecialist: string;
+}
+
+export interface MedicineDetail {
+  name: string;
+  category: string;
+  summary: string;
+  uses: string[];
+  commonSideEffects: string[];
+  precautions: string[];
+  source: "knowledge-base" | "heuristic";
+}
+
+export interface EmergencyAssessment {
+  requiresUrgentCare: boolean;
+  severity: RiskLevel;
+  headline: string;
+  action: string;
+  criticalTests: string[];
+}
+
+export interface DoctorRecommendation {
+  specialist: string;
+  priority: RiskLevel;
+  reason: string;
+}
+
+export interface AuthenticityProof {
+  algorithm: string;
+  issuedAt: string;
+  documentHash: string;
+  ocrHash: string;
+  analysisHash: string;
+  blockHash: string;
+  verificationMessage: string;
+}
+
+export interface TrendDataPoint {
+  reportId: string;
+  reportLabel: string;
+  createdAt: string;
+  metricKey: string;
+  testName: string;
+  value: number;
+  unit: string;
+  status: TestStatus;
+}
+
+export interface TrendInsight {
+  metricKey: string;
+  testName: string;
+  unit: string;
+  latestValue: number;
+  previousValue: number | null;
+  direction: "up" | "down" | "stable" | "mixed";
+  delta: number | null;
+  deltaPercent: number | null;
+  summary: string;
+  status: TestStatus;
+}
+
+export interface MedicalAnalysis {
+  documentType: string;
+  overview: string;
+  plainLanguageSummary: string;
+  possibleConditions: ConditionInsight[];
+  medicines: MedicineEntry[];
+  testValues: TestValueEntry[];
+  precautions: string[];
+  followUpQuestions: string[];
+  safetyFlags: string[];
+}
+
+export interface AbnormalFinding {
+  name: string;
+  value: string;
+  referenceRange: string;
+  status: TestStatus;
+  severity: RiskLevel;
+  explanation: string;
+}
+
+export interface HealthAlert {
+  title: string;
+  severity: RiskLevel;
+  reason: string;
+  recommendation: string;
+}
+
+export interface HealthInsights {
+  overallRisk: RiskLevel;
+  summary: string;
+  abnormalFindings: AbnormalFinding[];
+  alerts: HealthAlert[];
+  generalGuidance: string[];
+  safetyNotice: string;
+  preferredLanguage?: OutputLanguage;
+  testEvaluations?: TestEvaluation[];
+  riskPredictions?: RiskPrediction[];
+  medicineDetails?: MedicineDetail[];
+  emergencyAssessment?: EmergencyAssessment;
+  doctorRecommendations?: DoctorRecommendation[];
+  authenticity?: AuthenticityProof | null;
+}
+
+export interface OcrResult {
+  text: string;
+  engine: string;
+  confidence: "low" | "medium" | "high";
+}
+
+export interface ReportRecord {
+  id: string;
+  user_id: string;
+  title: string | null;
+  original_filename: string;
+  mime_type: string;
+  file_size: number;
+  storage_bucket: string;
+  storage_path: string;
+  ocr_text: string | null;
+  ocr_engine: string | null;
+  ocr_status: string;
+  analysis_json: MedicalAnalysis | null;
+  insights_json: HealthInsights | null;
+  report_status: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ChatMessageRecord {
+  id: string;
+  report_id: string;
+  user_id: string;
+  role: "user" | "assistant";
+  message: string;
+  response_json: Json | null;
+  created_at: string;
+}
+
+export interface ReportDetail extends ReportRecord {
+  chat_messages: ChatMessageRecord[];
+}
