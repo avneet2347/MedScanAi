@@ -1,6 +1,5 @@
 import "./globals.css";
-import AutoAnalyzer from "@/components/AutoAnalyzer";
-import ResultViewer from "@/components/ResultViewer";
+import { getThemeBootstrapScript } from "@/lib/theme";
 
 export default function RootLayout({
   children,
@@ -9,9 +8,8 @@ export default function RootLayout({
 }) {
   return (
     <html lang="en">
-      <body className="dark">
-        <AutoAnalyzer />
-        <ResultViewer />
+      <body className="dark" suppressHydrationWarning>
+        <script dangerouslySetInnerHTML={{ __html: getThemeBootstrapScript() }} />
         {children}
       </body>
     </html>

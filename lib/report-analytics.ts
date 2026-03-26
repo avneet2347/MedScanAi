@@ -1,10 +1,19 @@
 import { chooseLocalizedText } from "@/lib/localization";
+import {
+  buildInteractionChecks,
+  buildLifestyleRecommendations,
+  buildMedicineReminders,
+  mergeMedicineSupport,
+} from "@/lib/clinical-support";
 import { buildMedicineDetails } from "@/lib/medicine-info";
 import type {
   DoctorRecommendation,
   HealthInsights,
+  InteractionCheck,
+  LifestyleRecommendation,
   MedicalAnalysis,
   MedicineDetail,
+  MedicineReminder,
   OutputLanguage,
   RiskLevel,
   RiskPrediction,
@@ -266,7 +275,15 @@ export function evaluateTestValue(
         hinglish: "Fasting glucose ko aksar 126 mg/dL ya usse upar elevated maana jata hai.",
       });
 
-      if (numericValue >= 200) {
+      if (numericValue >= 400) {
+        status = "high";
+        severity = "critical";
+        explanation = chooseLocalizedText(language, {
+          en: "Blood sugar is in a critically high range and needs urgent medical review.",
+          hi: "ब्लड शुगर गंभीर रूप से ऊंची सीमा में है और तुरंत चिकित्सकीय समीक्षा की ज़रूरत है।",
+          hinglish: "Blood sugar critically high range me hai aur urgent medical review ki zarurat hai.",
+        });
+      } else if (numericValue >= 200) {
         status = "high";
         severity = "high";
         explanation = chooseLocalizedText(language, {
@@ -326,7 +343,15 @@ export function evaluateTestValue(
         hinglish: "Low hemoglobin anemia ka signal ho sakta hai aur clinical context me interpret karna chahiye.",
       });
 
-      if (numericValue < 8) {
+      if (numericValue < 6) {
+        status = "low";
+        severity = "critical";
+        explanation = chooseLocalizedText(language, {
+          en: "Hemoglobin is in a critically low range and may need urgent medical attention.",
+          hi: "Hemoglobin गंभीर रूप से कम सीमा में है और तुरंत चिकित्सकीय ध्यान की ज़रूरत हो सकती है।",
+          hinglish: "Hemoglobin critically low range me hai aur urgent medical attention ki zarurat ho sakti hai.",
+        });
+      } else if (numericValue < 8) {
         status = "low";
         severity = "high";
         explanation = chooseLocalizedText(language, {
@@ -395,6 +420,34 @@ export function evaluateTestValue(
           hinglish: "Potassium potentially dangerous range me hai.",
         });
       }
+    }
+  }
+
+  if (numericValue !== null) {
+    if ((lowerName.includes("glucose") || lowerName.includes("sugar")) && numericValue >= 400) {
+      status = "high";
+      severity = "critical";
+      explanation = chooseLocalizedText(language, {
+        en: "Blood sugar is in a critically high range and needs urgent medical review.",
+        hi: "ब्लड शुगर गंभीर रूप से ऊंची सीमा में है और तुरंत चिकित्सकीय समीक्षा की ज़रूरत है।",
+        hinglish: "Blood sugar critically high range me hai aur urgent medical review ki zarurat hai.",
+      });
+    } else if ((lowerName.includes("hemoglobin") || lowerName === "hb") && numericValue < 6) {
+      status = "low";
+      severity = "critical";
+      explanation = chooseLocalizedText(language, {
+        en: "Hemoglobin is in a critically low range and may need urgent medical attention.",
+        hi: "Hemoglobin गंभीर रूप से कम सीमा में है और तुरंत चिकित्सकीय ध्यान की ज़रूरत हो सकती है।",
+        hinglish: "Hemoglobin critically low range me hai aur urgent medical attention ki zarurat ho sakti hai.",
+      });
+    } else if (lowerName.includes("potassium") && (numericValue >= 6 || numericValue <= 2.8)) {
+      status = numericValue >= 6 ? "high" : "low";
+      severity = "critical";
+      explanation = chooseLocalizedText(language, {
+        en: "Potassium is in a potentially dangerous range.",
+        hi: "पोटैशियम संभावित रूप से खतरनाक सीमा में है।",
+        hinglish: "Potassium potentially dangerous range me hai.",
+      });
     }
   }
 
@@ -469,7 +522,7 @@ export function buildRiskPredictions(
 
   if (highGlucose.length > 0) {
     const highest = highGlucose.reduce((max, item) =>
-      item.severity === "high" && max.severity !== "high" ? item : max
+      riskOrder.indexOf(item.severity) > riskOrder.indexOf(max.severity) ? item : max
     );
 
     addPrediction(predictions, {
@@ -478,8 +531,13 @@ export function buildRiskPredictions(
         hi: "डायबिटीज़ / ब्लड शुगर जोखिम",
         hinglish: "Diabetes / blood sugar risk",
       }),
-      probability: highest.metricKey === "hba1c" ? 84 : 76,
-      severity: highest.severity === "critical" ? "high" : highest.severity,
+      probability:
+        highest.severity === "critical"
+          ? 92
+          : highest.metricKey === "hba1c"
+            ? 84
+            : 76,
+      severity: highest.severity,
       rationale: highGlucose.map(
         (item) => `${item.name}: ${item.value} ${item.unit}`.trim()
       ),
@@ -542,8 +600,16 @@ export function buildRiskPredictions(
         hi: "एनीमिया जोखिम",
         hinglish: "Anemia risk",
       }),
-      probability: hbTests.some((item) => item.severity === "high") ? 82 : 68,
-      severity: hbTests.some((item) => item.severity === "high") ? "high" : "moderate",
+      probability: hbTests.some((item) => item.severity === "critical")
+        ? 90
+        : hbTests.some((item) => item.severity === "high")
+          ? 82
+          : 68,
+      severity: hbTests.some((item) => item.severity === "critical")
+        ? "critical"
+        : hbTests.some((item) => item.severity === "high")
+          ? "high"
+          : "moderate",
       rationale: hbTests.map((item) => `${item.name}: ${item.value} ${item.unit}`.trim()),
       preventiveSteps: [
         chooseLocalizedText(language, {
@@ -763,17 +829,37 @@ export function enrichReportIntelligence(
   evaluations: TestEvaluation[];
   riskPredictions: RiskPrediction[];
   medicineDetails: MedicineDetail[];
+  interactionChecks: InteractionCheck[];
+  lifestyleRecommendations: LifestyleRecommendation[];
+  medicineReminders: MedicineReminder[];
   doctorRecommendations: DoctorRecommendation[];
 } {
+  const medicines = analysis.medicines || [];
   const evaluations = (analysis.testValues || []).map((test) =>
     evaluateTestValue(test, language)
   );
   const riskPredictions = buildRiskPredictions(analysis, evaluations, language);
+  const interactionChecks = buildInteractionChecks(medicines, evaluations, language);
+  const medicineReminders = buildMedicineReminders(medicines, language);
+  const lifestyleRecommendations = buildLifestyleRecommendations(
+    analysis,
+    evaluations,
+    riskPredictions,
+    language
+  );
+  const medicineDetails = mergeMedicineSupport(
+    buildMedicineDetails(medicines, language),
+    interactionChecks,
+    medicineReminders
+  );
 
   return {
     evaluations,
     riskPredictions,
-    medicineDetails: buildMedicineDetails(analysis.medicines || [], language),
+    medicineDetails,
+    interactionChecks,
+    lifestyleRecommendations,
+    medicineReminders,
     doctorRecommendations: buildDoctorRecommendations(riskPredictions, language),
   };
 }
@@ -1015,4 +1101,98 @@ export function buildFallbackChatReply(payload: {
       hinglish: "Main report summary, medicines, abnormal values aur trends par sawalon ka jawab de sakta hoon.",
     })
   );
+}
+
+export function buildFeatureAwareFallbackChatReply(payload: {
+  question: string;
+  currentAnalysis: MedicalAnalysis | null | undefined;
+  currentInsights: HealthInsights | null | undefined;
+  history: Array<{
+    title?: string | null;
+    createdAt?: string;
+    analysis?: MedicalAnalysis | null;
+  }>;
+  language: OutputLanguage;
+}) {
+  const normalizedQuestion = payload.question.toLowerCase();
+  const fallbackEnrichment = payload.currentAnalysis
+    ? enrichReportIntelligence(payload.currentAnalysis, payload.language)
+    : null;
+  const interactionChecks =
+    payload.currentInsights?.interactionChecks ||
+    fallbackEnrichment?.interactionChecks ||
+    [];
+  const lifestyleRecommendations =
+    payload.currentInsights?.lifestyleRecommendations ||
+    fallbackEnrichment?.lifestyleRecommendations ||
+    [];
+  const medicineReminders =
+    payload.currentInsights?.medicineReminders ||
+    fallbackEnrichment?.medicineReminders ||
+    [];
+
+  if (
+    normalizedQuestion.includes("interaction") ||
+    normalizedQuestion.includes("combine") ||
+    normalizedQuestion.includes("together") ||
+    normalizedQuestion.includes("saath")
+  ) {
+    if (interactionChecks.length === 0) {
+      return chooseLocalizedText(payload.language, {
+        en: "I could not identify enough medicine context to run an interaction check from the current report.",
+        hi: "मौजूदा रिपोर्ट से इंटरैक्शन चेक के लिए पर्याप्त दवा संदर्भ नहीं मिला।",
+        hinglish: "Current report se interaction check ke liye enough medicine context nahi mila.",
+      });
+    }
+
+    return interactionChecks
+      .slice(0, 3)
+      .map((item) => `${item.title}: ${item.recommendation}`)
+      .join(" ");
+  }
+
+  if (
+    normalizedQuestion.includes("diet") ||
+    normalizedQuestion.includes("food") ||
+    normalizedQuestion.includes("lifestyle") ||
+    normalizedQuestion.includes("exercise") ||
+    normalizedQuestion.includes("aahar") ||
+    normalizedQuestion.includes("khana")
+  ) {
+    if (lifestyleRecommendations.length === 0) {
+      return chooseLocalizedText(payload.language, {
+        en: "I do not have enough structured findings to suggest a focused lifestyle plan from this report alone.",
+        hi: "केवल इस रिपोर्ट से केंद्रित लाइफस्टाइल प्लान सुझाने के लिए मेरे पास पर्याप्त संरचित जानकारी नहीं है।",
+        hinglish: "Sirf is report se focused lifestyle plan suggest karne ke liye mere paas enough structured info nahi hai.",
+      });
+    }
+
+    return lifestyleRecommendations
+      .slice(0, 3)
+      .map((item) => `${item.title}: ${item.details}`)
+      .join(" ");
+  }
+
+  if (
+    normalizedQuestion.includes("reminder") ||
+    normalizedQuestion.includes("schedule") ||
+    normalizedQuestion.includes("timing") ||
+    normalizedQuestion.includes("dose") ||
+    normalizedQuestion.includes("kab")
+  ) {
+    if (medicineReminders.length === 0) {
+      return chooseLocalizedText(payload.language, {
+        en: "No medicine schedule could be inferred because the report did not clearly include medicines or dosing frequency.",
+        hi: "कोई दवा शेड्यूल नहीं निकाला जा सका क्योंकि रिपोर्ट में दवाएं या डोज़ फ्रीक्वेंसी स्पष्ट नहीं थी।",
+        hinglish: "Medicine schedule infer nahi ho saka kyunki report me medicines ya dosing frequency clear nahi thi.",
+      });
+    }
+
+    return medicineReminders
+      .slice(0, 3)
+      .map((item) => `${item.medicineName}: ${item.schedule}. ${item.instructions}`)
+      .join(" ");
+  }
+
+  return buildFallbackChatReply(payload);
 }

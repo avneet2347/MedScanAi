@@ -2,7 +2,10 @@ import crypto from "node:crypto";
 import OpenAI, { toFile } from "openai";
 import { ApiError, normalizeText, safeJsonParse } from "@/lib/api-utils";
 import { chooseLocalizedText } from "@/lib/localization";
-import { buildFallbackChatReply, buildHistoricalContext } from "@/lib/report-analytics";
+import {
+  buildFeatureAwareFallbackChatReply,
+  buildHistoricalContext,
+} from "@/lib/report-analytics";
 import { generateFallbackMedicalAnalysis } from "@/lib/fallback-analysis";
 import type {
   HealthInsights,
@@ -470,7 +473,7 @@ export async function generateChatReply(payload: {
       throw error;
     }
 
-    return buildFallbackChatReply({
+    return buildFeatureAwareFallbackChatReply({
       question: payload.question,
       currentAnalysis: payload.currentReport.analysis,
       currentInsights: payload.currentReport.insights,

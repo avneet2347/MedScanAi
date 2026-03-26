@@ -1,6 +1,15 @@
 "use client";
 
-import { useState, useRef, useEffect } from "react";
+import { useEffect, useRef, useState } from "react";
+import Link from "next/link";
+import { useRouter } from "next/navigation";
+import type { FeatureModuleKey } from "@/lib/feature-modules";
+import {
+  THEME_CHANGE_EVENT,
+  THEME_STORAGE_KEY,
+  readActiveTheme,
+  setThemePreference,
+} from "@/lib/theme";
 
 /* ─────────────────────────── DATA ─────────────────────────── */
 const labValues = [
@@ -13,14 +22,14 @@ const labValues = [
 ];
 
 const features = [
-  { icon: "💊", tag: "PHARMACOLOGY",  title: "Medicine Analysis",  desc: "Dosage, mechanism, contraindications, and side-effects explained without jargon.",           accent: "#0284c7" },
-  { icon: "⚗️", tag: "DRUG SAFETY",   title: "Interaction Check",  desc: "Cross-references every medicine against known harmful combinations with severity grading.",    accent: "#dc2626" },
-  { icon: "🩸", tag: "PATHOLOGY",     title: "Lab Report Flags",   desc: "CBC, LFT, KFT, HbA1c — abnormal values highlighted with clinical context and risk level.",   accent: "#ea580c" },
-  { icon: "🧠", tag: "DIAGNOSTICS",   title: "Disease Prediction", desc: "ML models trained on clinical datasets infer risk patterns from symptoms and reports.",       accent: "#7c3aed" },
-  { icon: "🥗", tag: "NUTRITION",     title: "Diet & Lifestyle",   desc: "Therapeutic diet plans and activity guidance aligned directly with your diagnosis.",           accent: "#16a34a" },
-  { icon: "🩺", tag: "REFERRAL",      title: "Specialist Match",   desc: "Recommends the right specialty — Cardiologist, Endocrinologist, Nephrologist, and more.",     accent: "#0284c7" },
-  { icon: "🔔", tag: "COMPLIANCE",    title: "Medicine Reminders", desc: "Automated dose schedules with push notifications to improve adherence and outcomes.",          accent: "#b45309" },
-  { icon: "🗣️", tag: "ACCESSIBILITY", title: "Voice Explanation",  desc: "Reports narrated aloud in English, Hindi, or Hinglish for every patient.",                   accent: "#be185d" },
+  { key: "medicine-analysis" as FeatureModuleKey, icon: "💊", tag: "PHARMACOLOGY",  title: "Medicine Analysis",  desc: "Dosage, mechanism, contraindications, and side-effects explained without jargon.",           accent: "#0284c7" },
+  { key: "interaction-check" as FeatureModuleKey, icon: "⚗️", tag: "DRUG SAFETY",   title: "Interaction Check",  desc: "Cross-references every medicine against known harmful combinations with severity grading.",    accent: "#dc2626" },
+  { key: "lab-report-flags" as FeatureModuleKey, icon: "🩸", tag: "PATHOLOGY",     title: "Lab Report Flags",   desc: "CBC, LFT, KFT, HbA1c — abnormal values highlighted with clinical context and risk level.",   accent: "#ea580c" },
+  { key: "disease-prediction" as FeatureModuleKey, icon: "🧠", tag: "DIAGNOSTICS",   title: "Disease Prediction", desc: "ML models trained on clinical datasets infer risk patterns from symptoms and reports.",       accent: "#7c3aed" },
+  { key: "diet-lifestyle" as FeatureModuleKey, icon: "🥗", tag: "NUTRITION",     title: "Diet & Lifestyle",   desc: "Therapeutic diet plans and activity guidance aligned directly with your diagnosis.",           accent: "#16a34a" },
+  { key: "specialist-match" as FeatureModuleKey, icon: "🩺", tag: "REFERRAL",      title: "Specialist Match",   desc: "Recommends the right specialty — Cardiologist, Endocrinologist, Nephrologist, and more.",     accent: "#0284c7" },
+  { key: "medicine-reminders" as FeatureModuleKey, icon: "🔔", tag: "COMPLIANCE",    title: "Medicine Reminders", desc: "Automated dose schedules with push notifications to improve adherence and outcomes.",          accent: "#b45309" },
+  { key: "voice-explanation" as FeatureModuleKey, icon: "🗣️", tag: "ACCESSIBILITY", title: "Voice Explanation",  desc: "Reports narrated aloud in English, Hindi, or Hinglish for every patient.",                   accent: "#be185d" },
 ];
 
 const steps = [
@@ -39,6 +48,7 @@ const stats = [
 ];
 
 export default function Home() {
+  const router = useRouter();
   const [file, setFile]         = useState<File | null>(null);
   const [dragging, setDragging] = useState(false);
   const [lang, setLang]         = useState<"en" | "hi" | "hinglish">("en");
@@ -47,36 +57,85 @@ export default function Home() {
   const fileRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
-    const saved = localStorage.getItem("ms-theme");
-    let frameId: number | null = null;
+    const syncThemeState = () => {
+      setDark(readActiveTheme() === "dark");
+    };
 
-    if (saved === "light") {
-      frameId = window.requestAnimationFrame(() => setDark(false));
-    }
+    syncThemeState();
 
-    const id = setInterval(() => setTick(t => t + 1), 40);
+    const handleStorage = (event: StorageEvent) => {
+      if (event.key && event.key !== THEME_STORAGE_KEY) {
+        return;
+      }
+
+      syncThemeState();
+    };
+
+    const handleThemeChange = () => {
+      syncThemeState();
+    };
+
+    window.addEventListener("storage", handleStorage);
+    window.addEventListener(THEME_CHANGE_EVENT, handleThemeChange);
 
     return () => {
-      clearInterval(id);
-      if (frameId !== null) {
-        window.cancelAnimationFrame(frameId);
-      }
+      window.removeEventListener("storage", handleStorage);
+      window.removeEventListener(THEME_CHANGE_EVENT, handleThemeChange);
     };
   }, []);
 
   useEffect(() => {
-    localStorage.setItem("ms-theme", dark ? "dark" : "light");
-    if (dark) {
-      document.body.classList.add("dark");
-    } else {
-      document.body.classList.remove("dark");
-    }
-  }, [dark]);
+    const id = setInterval(() => setTick(t => t + 1), 40);
+
+    return () => {
+      clearInterval(id);
+    };
+  }, []);
 
   const handleDrop = (e: React.DragEvent) => {
-    e.preventDefault(); setDragging(false);
-    const f = e.dataTransfer.files[0];
-    if (f) setFile(f);
+    e.preventDefault();
+    setDragging(false);
+    openWorkspace("signup");
+  };
+
+  const handleFeatureActivation = () => {
+    openWorkspace("signup");
+  };
+
+  const scrollToSection = (sectionId: string) => {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    document.getElementById(sectionId)?.scrollIntoView({
+      behavior: "smooth",
+      block: "start",
+    });
+  };
+
+  const openWorkspace = (mode: "login" | "signup") => {
+    router.push(mode === "login" ? "/login" : "/signup");
+  };
+
+  const scrollToTop = (event: React.MouseEvent<HTMLAnchorElement>) => {
+    event.preventDefault();
+
+    if (typeof window !== "undefined") {
+      window.scrollTo({
+        top: 0,
+        behavior: "smooth",
+      });
+    }
+  };
+
+  const handleAnalyzeButtonClick = () => {
+    openWorkspace("signup");
+  };
+
+  const toggleTheme = () => {
+    const nextTheme = dark ? "light" : "dark";
+    setThemePreference(nextTheme);
+    setDark(nextTheme === "dark");
   };
 
   const ecgOffset = -(tick * 1.5) % 400;
@@ -607,7 +666,7 @@ export default function Home() {
 
         .lang-selector { margin-top: 1.5rem; }
         .lang-label { font-size: 0.7rem; font-weight: 700; color: var(--muted2); letter-spacing: 1.5px; text-transform: uppercase; margin-bottom: 0.5rem; }
-        .lang-btns { display: flex; gap: 0.5rem; }
+        .lang-btns { display: flex; gap: 0.5rem; flex-wrap: wrap; }
         .lang-btn {
           padding: 0.42rem 1rem;
           border-radius: 8px;
@@ -628,6 +687,8 @@ export default function Home() {
           border-radius: 8px;
           font-size: 0.8rem; font-weight: 500; color: var(--blue);
           margin-top: 1rem;
+          min-width: 0;
+          word-break: break-word;
         }
         .file-remove {
           margin-left: auto;
@@ -727,7 +788,8 @@ export default function Home() {
           padding: 1.5rem 1.3rem;
           position: relative; overflow: hidden;
           transition: transform 0.2s, background 0.2s;
-          cursor: default;
+          cursor: pointer;
+          outline: none;
         }
         .feature-card::after {
           content: '';
@@ -737,6 +799,8 @@ export default function Home() {
         }
         .feature-card:hover { transform: translateY(-4px); background: rgba(255,255,255,0.065); }
         .feature-card:hover::after { opacity: 1; }
+        .feature-card:focus-visible { transform: translateY(-4px); background: rgba(255,255,255,0.065); }
+        .feature-card:focus-visible::after { opacity: 1; }
         .feature-tag { font-family: var(--font-mono); font-size: 0.58rem; font-weight: 600; letter-spacing: 2px; margin-bottom: 0.75rem; }
         .feature-icon { font-size: 1.7rem; margin-bottom: 0.75rem; }
         .feature-title { font-size: 0.88rem; font-weight: 700; color: #f0f6ff; margin-bottom: 0.45rem; }
@@ -796,6 +860,7 @@ export default function Home() {
           border-bottom: 1px solid var(--border);
           transition: background 0.15s;
         }
+        .lt-row > span { min-width: 0; }
         .lt-row:last-child { border-bottom: none; }
         .lt-row:hover { background: var(--bg-subtle); }
         .lt-name { font-size: 0.82rem; font-weight: 600; color: var(--ink); }
@@ -903,6 +968,14 @@ export default function Home() {
         .f-links a:hover { color: #38bdf8; }
 
         /* ────── RESPONSIVE ────── */
+        @media (max-width: 1100px) {
+          .nav { padding: 0 1.5rem; }
+          .nav-links { margin-left: 1.4rem; }
+          .hero,
+          .upload-section,
+          .lab-section { gap: 3rem; }
+        }
+
         @media (max-width: 900px) {
           .nav { padding: 0 1.4rem; }
           .nav-links, .status-pill { display: none; }
@@ -913,7 +986,151 @@ export default function Home() {
           .stats-band { gap: 2rem; padding: 2rem 1.5rem; }
           .alert-card { grid-template-columns: auto 1fr; }
           .alert-badge { display: none; }
+          .hero-sub, .section-sub { max-width: none; }
+          .lt-head { gap: 0.75rem; flex-wrap: wrap; }
           footer { padding: 1.5rem 1.4rem; flex-direction: column; align-items: flex-start; }
+        }
+
+        @media (max-width: 640px) {
+          .container { padding: 0 1rem; }
+          .nav {
+            height: auto;
+            min-height: 64px;
+            padding: 0.85rem 1rem;
+            flex-wrap: wrap;
+            gap: 0.75rem;
+          }
+          .nav-logo { font-size: 1.12rem; }
+          .nav-right {
+            width: 100%;
+            margin-left: 0;
+            justify-content: flex-start;
+            flex-wrap: wrap;
+            gap: 0.6rem;
+          }
+          .nav-right .btn {
+            flex: 1 1 0;
+            justify-content: center;
+            padding-inline: 0.95rem;
+          }
+          .theme-toggle { margin-left: auto; }
+
+          .hero {
+            padding: 2.8rem 1rem 1.7rem;
+            gap: 1.75rem;
+          }
+          .hero h1 { font-size: clamp(2.25rem, 11vw, 3.1rem); }
+          .hero-sub { font-size: 0.95rem; line-height: 1.7; }
+          .hero-ctas,
+          .cta-buttons { flex-direction: column; }
+          .btn-hero-primary,
+          .btn-hero-ghost,
+          .btn-cta-primary,
+          .btn-cta-ghost {
+            width: 100%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+          }
+
+          .stats-band {
+            padding: 1.8rem 1rem;
+            gap: 1.25rem 1.75rem;
+          }
+          .stat-item {
+            flex: 1 1 calc(50% - 1rem);
+            min-width: 130px;
+          }
+          .stat-val { font-size: 1.8rem; }
+
+          .upload-section,
+          .lab-section { padding: 3rem 1rem; gap: 2rem; }
+          .drop-zone { padding: 2.25rem 1.1rem; }
+          .drop-icon-wrap {
+            width: 64px;
+            height: 64px;
+            border-radius: 16px;
+          }
+
+          .hiw-header { padding: 1rem 1.1rem; }
+          .hiw-step {
+            padding: 1rem 1.1rem;
+            gap: 0.85rem;
+          }
+          .hiw-step:not(:last-child)::after {
+            left: calc(1.1rem + 15px);
+          }
+
+          .features-section,
+          .cta-section { padding-inline: 1rem; }
+          .features-section { padding-block: 4rem; }
+          .features-head { margin-bottom: 2.5rem; }
+          .features-grid { grid-template-columns: 1fr; }
+          .feature-card { padding: 1.25rem 1.1rem; }
+
+          .lab-table { border-radius: 16px; }
+          .lt-head {
+            padding: 0.9rem 1rem;
+            flex-direction: column;
+            align-items: flex-start;
+          }
+          .lt-cols { display: none; }
+          .lt-row {
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 0.6rem 1rem;
+            padding: 1rem;
+          }
+          .lt-row > span {
+            display: flex;
+            flex-direction: column;
+            gap: 0.18rem;
+          }
+          .lt-row > span::before {
+            font-size: 0.58rem;
+            font-weight: 700;
+            letter-spacing: 0.14em;
+            text-transform: uppercase;
+            color: var(--muted2);
+          }
+          .lt-row > span:nth-child(1)::before { content: "Parameter"; }
+          .lt-row > span:nth-child(2)::before { content: "Value"; }
+          .lt-row > span:nth-child(3)::before { content: "Reference"; }
+          .lt-row > span:nth-child(4)::before { content: "Status"; }
+          .lt-foot {
+            padding: 0.9rem 1rem;
+            align-items: flex-start;
+          }
+
+          .alert-wrap { padding: 0 1rem 4rem; }
+          .alert-card {
+            grid-template-columns: 1fr;
+            padding: 1.4rem 1.25rem;
+            gap: 1rem;
+          }
+          .alert-icon {
+            width: 52px;
+            height: 52px;
+            border-radius: 14px;
+          }
+
+          .cta-section { padding-block: 4.5rem; }
+          .cta-section p { margin-bottom: 1.75rem; }
+          .f-links {
+            flex-wrap: wrap;
+            gap: 1rem;
+          }
+        }
+
+        @media (max-width: 420px) {
+          .nav-right .btn {
+            flex-basis: 100%;
+          }
+          .theme-toggle { margin-left: 0; }
+          .stat-item {
+            flex-basis: 100%;
+            min-width: 0;
+          }
+          .lt-row { grid-template-columns: 1fr; }
         }
       `}</style>
 
@@ -922,12 +1139,12 @@ export default function Home() {
 
       {/* ────── NAV ────── */}
       <nav className="nav">
-        <a href="#" className="nav-logo">
+        <a href="#top" className="nav-logo" onClick={scrollToTop}>
           <div className="nav-logo-mark">🩺</div>
           Medi<em>Scan</em> AI
         </a>
         <ul className="nav-links">
-          <li><a href="#scan">Scan Report</a></li>
+          <li><a href="#scan">Access Flow</a></li>
           <li><a href="#features">Features</a></li>
           <li><a href="#labs">Lab Analysis</a></li>
         </ul>
@@ -936,9 +1153,9 @@ export default function Home() {
             <span className="pulse-dot" />
             System Operational
           </div>
-          <button className="btn btn-outline">Sign In</button>
-          <button className="btn btn-solid">Get Started →</button>
-          <button className="theme-toggle" onClick={() => setDark(x => !x)} title="Toggle theme">
+          <button className="btn btn-outline" onClick={() => openWorkspace("login")}>Sign In</button>
+          <button className="btn btn-solid" onClick={() => openWorkspace("signup")}>Get Started →</button>
+          <button className="theme-toggle" onClick={toggleTheme} title="Toggle theme" type="button">
             {dark ? "☀️" : "🌙"}
           </button>
         </div>
@@ -955,15 +1172,15 @@ export default function Home() {
             Instantly
           </h1>
           <p className="hero-sub">
-            Upload any prescription or lab report. MediScan AI reads, simplifies,
-            and analyses it — checking drug interactions, flagging critical values,
-            and guiding your next health step in under 2 seconds.
+            Learn how MediScan AI turns prescriptions and lab reports into clear, useful
+            guidance. Create an account, verify your email, and then continue in your
+            private workspace to analyze reports and store your own history.
           </p>
           <div className="hero-ctas">
-            <button className="btn-hero-primary" onClick={() => document.getElementById("scan")?.scrollIntoView({ behavior: "smooth" })}>
-              Scan a Report →
+            <button className="btn-hero-primary" onClick={() => scrollToSection("scan")}>
+              See Access Flow
             </button>
-            <button className="btn-hero-ghost">▶ Watch Demo</button>
+            <button className="btn-hero-ghost" onClick={() => openWorkspace("login")}>Sign In</button>
           </div>
           <div className="trust-badges">
             {["🔒 HIPAA Compliant", "🧪 98.4% OCR Accuracy", "🌐 3 Languages", "⚡ <2s Analysis"].map(t => (
@@ -1075,11 +1292,11 @@ export default function Home() {
       <div className="upload-section" id="scan">
         {/* left: drop zone */}
         <div>
-          <div className="section-eyebrow">Prescription Scanner</div>
-          <h2 className="section-h">Upload Your Report.<br />Get Clarity.</h2>
+          <div className="section-eyebrow">Secure Access</div>
+          <h2 className="section-h">Create Your Account.<br />Unlock Your Workspace.</h2>
           <p className="section-sub">
-            Drop a prescription or lab report. OCR extracts every character — NLP converts
-            medical jargon to plain language in your chosen language.
+            MediScan AI keeps uploads, OCR, explanations, and chat history tied to the
+            verified user who is signed in.
           </p>
 
           <div style={{ marginTop: "2rem" }}>
@@ -1088,15 +1305,15 @@ export default function Home() {
               onDragOver={e => { e.preventDefault(); setDragging(true); }}
               onDragLeave={() => setDragging(false)}
               onDrop={handleDrop}
-              onClick={() => fileRef.current?.click()}
+              onClick={() => openWorkspace("signup")}
               role="button" tabIndex={0}
-              onKeyDown={e => e.key === "Enter" && fileRef.current?.click()}
+              onKeyDown={e => e.key === "Enter" && openWorkspace("signup")}
             >
               <input ref={fileRef} type="file" accept=".pdf,.png,.jpg,.jpeg,.webp"
                 style={{ display: "none" }} onChange={e => setFile(e.target.files?.[0] || null)} />
               <div className="drop-icon-wrap">{file ? "✅" : "🔬"}</div>
-              <div className="drop-title">{file ? file.name : "Drop your medical report here"}</div>
-              <div className="drop-sub">{file ? `${(file.size / 1024).toFixed(0)} KB — ready for AI analysis` : "Drag & drop or click to browse"}</div>
+              <div className="drop-title">{file ? file.name : "Create an account to unlock secure report analysis"}</div>
+              <div className="drop-sub">{file ? `${(file.size / 1024).toFixed(0)} KB - continue in your workspace to analyze this report` : "Sign up, verify your email, and use your private dashboard for uploads and results."}</div>
               {!file && (
                 <div className="fmt-chips">
                   {["PDF", "PNG", "JPG", "WEBP"].map(f => <span key={f} className="fmt-chip">{f}</span>)}
@@ -1112,7 +1329,7 @@ export default function Home() {
             )}
 
             <div className="lang-selector">
-              <div className="lang-label">Output Language</div>
+              <div className="lang-label">Language preview</div>
               <div className="lang-btns">
                 {(["en", "hi", "hinglish"] as const).map(l => (
                   <button key={l} data-lang={l} className={`lang-btn${lang === l ? " active" : ""}`} onClick={() => setLang(l)}>
@@ -1123,7 +1340,7 @@ export default function Home() {
             </div>
 
             {file && (
-              <button className="btn-analyze" onClick={e => e.stopPropagation()}>
+              <button className="btn-analyze" type="button" onClick={handleAnalyzeButtonClick}>
                 🧬 Analyse Report
               </button>
             )}
@@ -1161,7 +1378,21 @@ export default function Home() {
           </div>
           <div className="features-grid">
             {features.map(f => (
-              <div key={f.title} className="feature-card" style={{ "--fc-accent": f.accent } as React.CSSProperties}>
+              <div
+                key={f.title}
+                className="feature-card"
+                style={{ "--fc-accent": f.accent } as React.CSSProperties}
+                role="button"
+                tabIndex={0}
+                aria-label={`Create an account to use ${f.title}`}
+                onClick={handleFeatureActivation}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" || event.key === " ") {
+                    event.preventDefault();
+                    handleFeatureActivation();
+                  }
+                }}
+              >
                 <div className="feature-tag" style={{ color: f.accent }}>{f.tag}</div>
                 <div className="feature-icon">{f.icon}</div>
                 <div className="feature-title">{f.title}</div>
@@ -1242,12 +1473,12 @@ export default function Home() {
       <div className="cta-section">
         <div className="cta-inner">
           <h2>Your Health,<br /><em>Decoded</em></h2>
-          <p>Upload your first report free. No account required. Private by design.</p>
+          <p>Create a verified account to unlock secure report analysis and your private history.</p>
           <div className="cta-buttons">
-            <button className="btn-cta-primary" onClick={() => document.getElementById("scan")?.scrollIntoView({ behavior: "smooth" })}>
-              Scan a Report Free →
+            <button className="btn-cta-primary" onClick={() => openWorkspace("signup")}>
+              Create Account
             </button>
-            <button className="btn-cta-ghost">View Sample Report</button>
+            <button className="btn-cta-ghost" onClick={() => openWorkspace("login")}>Sign In</button>
           </div>
         </div>
       </div>
@@ -1259,13 +1490,16 @@ export default function Home() {
           <p style={{ marginTop: "0.3rem" }}>AI-powered clinical intelligence for everyone.</p>
         </div>
         <div className="f-links">
-          <a href="#">Privacy</a>
-          <a href="#">Terms</a>
-          <a href="#">HIPAA</a>
-          <a href="#">Contact</a>
-          <a href="#">GitHub</a>
+          <Link href="/privacy">Privacy</Link>
+          <Link href="/terms">Terms</Link>
+          <Link href="/hipaa">HIPAA</Link>
+          <Link href="/contact">Contact</Link>
+          <a href="https://github.com/avneet2347/MedScanAi" target="_blank" rel="noreferrer">
+            GitHub
+          </a>
         </div>
       </footer>
+
     </>
   );
 }

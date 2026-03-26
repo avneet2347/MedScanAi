@@ -1,6 +1,8 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useEffectEvent, useRef, useState } from "react";
+import type { FeatureModuleKey } from "@/lib/feature-modules";
+import { generateHealthInsights } from "@/lib/insights";
 import { buildTrendInsights } from "@/lib/report-analytics";
 import type {
   HealthInsights,
@@ -13,6 +15,7 @@ import styles from "./ResultViewer.module.css";
 declare global {
   interface Window {
     setResult?: (value: unknown) => void;
+    openMedScanFeature?: (feature: FeatureModuleKey) => boolean;
   }
 }
 
@@ -90,17 +93,28 @@ function normalizeResult(value: unknown): ViewerResult | null {
   }
 
   const payload = value as Record<string, unknown>;
+  const nestedReport =
+    typeof payload.report === "object" && payload.report
+      ? (payload.report as Record<string, unknown>)
+      : null;
   const reportId =
     typeof payload.reportId === "string" && payload.reportId.trim()
       ? payload.reportId
-      : `local-${Date.now()}`;
+      : typeof nestedReport?.id === "string" && nestedReport.id.trim()
+        ? nestedReport.id
+        : `local-${Date.now()}`;
 
   return {
     reportId,
     filename:
-      (typeof payload.filename === "string" && payload.filename) || "Medical report",
+      (typeof payload.filename === "string" && payload.filename) ||
+      (typeof nestedReport?.title === "string" && nestedReport.title) ||
+      (typeof nestedReport?.original_filename === "string" &&
+        nestedReport.original_filename) ||
+      "Medical report",
     createdAt:
       (typeof payload.createdAt === "string" && payload.createdAt) ||
+      (typeof nestedReport?.created_at === "string" && nestedReport.created_at) ||
       new Date().toISOString(),
     language:
       payload.language === "hi" || payload.language === "hinglish"
@@ -149,18 +163,47 @@ function persistHistory(history: ViewerResult[]) {
   window.localStorage.setItem(HISTORY_KEY, JSON.stringify(history.slice(0, 10)));
 }
 
-function summaryText(result: ViewerResult | null) {
-  if (!result) {
-    return "";
+function mergeInsightsWithFallback(
+  primary: HealthInsights | null,
+  fallback: HealthInsights | null
+) {
+  if (!primary) {
+    return fallback;
   }
 
-  return [
-    result.analysis?.plainLanguageSummary,
-    result.insights?.summary,
-    result.insights?.emergencyAssessment?.headline,
-  ]
-    .filter(Boolean)
-    .join(" ");
+  if (!fallback) {
+    return primary;
+  }
+
+  return {
+    ...fallback,
+    ...primary,
+    abnormalFindings:
+      primary.abnormalFindings?.length ? primary.abnormalFindings : fallback.abnormalFindings,
+    alerts: primary.alerts?.length ? primary.alerts : fallback.alerts,
+    generalGuidance:
+      primary.generalGuidance?.length ? primary.generalGuidance : fallback.generalGuidance,
+    testEvaluations:
+      primary.testEvaluations?.length ? primary.testEvaluations : fallback.testEvaluations,
+    riskPredictions:
+      primary.riskPredictions?.length ? primary.riskPredictions : fallback.riskPredictions,
+    medicineDetails:
+      primary.medicineDetails?.length ? primary.medicineDetails : fallback.medicineDetails,
+    interactionChecks:
+      primary.interactionChecks?.length ? primary.interactionChecks : fallback.interactionChecks,
+    lifestyleRecommendations:
+      primary.lifestyleRecommendations?.length
+        ? primary.lifestyleRecommendations
+        : fallback.lifestyleRecommendations,
+    medicineReminders:
+      primary.medicineReminders?.length ? primary.medicineReminders : fallback.medicineReminders,
+    doctorRecommendations:
+      primary.doctorRecommendations?.length
+        ? primary.doctorRecommendations
+        : fallback.doctorRecommendations,
+    emergencyAssessment: primary.emergencyAssessment || fallback.emergencyAssessment,
+    authenticity: primary.authenticity || fallback.authenticity || null,
+  };
 }
 
 export default function ResultViewer() {
@@ -173,6 +216,21 @@ export default function ResultViewer() {
   const [chatLoading, setChatLoading] = useState(false);
   const [hidden, setHidden] = useState(false);
   const [speaking, setSpeaking] = useState(false);
+  const [revealedFeaturePanels, setRevealedFeaturePanels] = useState<FeatureModuleKey[]>([]);
+  const [focusedFeature, setFocusedFeature] = useState<FeatureModuleKey | null>(null);
+  const [pendingFeature, setPendingFeature] = useState<FeatureModuleKey | null>(null);
+  const sectionRefs = useRef<Partial<Record<FeatureModuleKey, HTMLElement | null>>>({});
+
+  const activateFeature = useEffectEvent((feature: FeatureModuleKey) => {
+    setHidden(false);
+    setRevealedFeaturePanels((current) =>
+      current.includes(feature) ? current : [...current, feature]
+    );
+    setFocusedFeature(null);
+    window.requestAnimationFrame(() => {
+      setFocusedFeature(feature);
+    });
+  });
 
   useEffect(() => {
     const savedHistory = readHistory();
@@ -193,6 +251,7 @@ export default function ResultViewer() {
       }
 
       setHidden(false);
+      setRevealedFeaturePanels([]);
       setResult(normalized);
       setHistory((current) => {
         const next = [normalized, ...current.filter((item) => item.reportId !== normalized.reportId)];
@@ -206,8 +265,65 @@ export default function ResultViewer() {
   }, []);
 
   useEffect(() => {
-    setSelectedMedicine(result?.insights?.medicineDetails?.[0]?.name || null);
+    setSelectedMedicine(
+      result?.insights?.medicineDetails?.[0]?.name || result?.analysis?.medicines?.[0]?.name || null
+    );
+    setRevealedFeaturePanels([]);
   }, [result]);
+
+  useEffect(() => {
+    window.openMedScanFeature = (feature: FeatureModuleKey) => {
+      if (!result) {
+        return false;
+      }
+
+      activateFeature(feature);
+      return true;
+    };
+
+    return () => {
+      delete window.openMedScanFeature;
+    };
+  }, [result]);
+
+  useEffect(() => {
+    const handleFocusFeature = (event: Event) => {
+      const detail = (event as CustomEvent<{ feature?: FeatureModuleKey | null }>).detail;
+      const feature = detail?.feature;
+
+      if (!feature) {
+        return;
+      }
+
+      if (result) {
+        activateFeature(feature);
+        return;
+      }
+
+      setPendingFeature(feature);
+    };
+
+    window.addEventListener("medscan:focus-feature", handleFocusFeature);
+
+    return () => {
+      window.removeEventListener("medscan:focus-feature", handleFocusFeature);
+    };
+  }, [result]);
+
+  useEffect(() => {
+    if (!result || !pendingFeature || typeof window === "undefined") {
+      return;
+    }
+
+    const frameId = window.requestAnimationFrame(() => {
+      activateFeature(pendingFeature);
+      setPendingFeature(null);
+    });
+
+    return () => {
+      window.cancelAnimationFrame(frameId);
+    };
+  }, [pendingFeature, result]);
 
   useEffect(() => {
     return () => {
@@ -217,12 +333,106 @@ export default function ResultViewer() {
     };
   }, []);
 
-  if (hidden || !result) {
+  const isVisible = Boolean(result) && !hidden;
+  const previewResult = result;
+  const previewFallbackInsights = previewResult?.analysis
+    ? generateHealthInsights(previewResult.analysis, {
+        language: previewResult.language,
+        authenticity: previewResult.insights?.authenticity || null,
+      })
+    : null;
+  const previewInsights = previewResult
+    ? mergeInsightsWithFallback(previewResult.insights, previewFallbackInsights)
+    : null;
+  const previewReportSummary = previewResult
+    ? [
+        previewResult.analysis?.plainLanguageSummary,
+        previewInsights?.summary,
+        previewInsights?.emergencyAssessment?.headline,
+      ]
+        .filter(Boolean)
+        .join(" ")
+    : "";
+
+  useEffect(() => {
+    if (!isVisible || typeof window === "undefined") {
+      return;
+    }
+
+    const previousOverflow = document.body.style.overflow;
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        window.speechSynthesis?.cancel();
+        setSpeaking(false);
+        setHidden(true);
+      }
+    };
+
+    document.body.style.overflow = "hidden";
+    window.addEventListener("keydown", handleKeyDown);
+
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [isVisible]);
+
+  useEffect(() => {
+    if (!isVisible || !focusedFeature || typeof window === "undefined") {
+      return;
+    }
+
+    const targetSection = sectionRefs.current[focusedFeature];
+
+    if (targetSection) {
+      window.requestAnimationFrame(() => {
+        targetSection.scrollIntoView({
+          behavior: "smooth",
+          block: "start",
+        });
+      });
+    }
+
+    if (focusedFeature === "voice-explanation" && previewReportSummary && previewResult) {
+      const synthesis = window.speechSynthesis;
+
+      if (synthesis) {
+        synthesis.cancel();
+        const utterance = new SpeechSynthesisUtterance(previewReportSummary);
+        utterance.lang = previewResult.language === "hi" ? "hi-IN" : "en-IN";
+        utterance.onend = () => setSpeaking(false);
+        utterance.onerror = () => setSpeaking(false);
+        setSpeaking(true);
+        synthesis.speak(utterance);
+      }
+    }
+
+    const timeoutId = window.setTimeout(() => {
+      setFocusedFeature(null);
+    }, 300);
+
+    return () => {
+      window.clearTimeout(timeoutId);
+    };
+  }, [focusedFeature, isVisible, previewReportSummary, previewResult]);
+
+  if (!result) {
     return null;
   }
 
+  function handleClose() {
+    if (typeof window !== "undefined") {
+      window.speechSynthesis?.cancel();
+    }
+
+    setSpeaking(false);
+    setHidden(true);
+  }
+
   const currentResult = result;
-  const medicineDetails = currentResult.insights?.medicineDetails || [];
+  const insights = previewInsights;
+  const reportSummary = previewReportSummary;
+  const medicineDetails = insights?.medicineDetails || [];
   const selectedMedicineDetail =
     medicineDetails.find((item) => item.name === selectedMedicine) || medicineDetails[0] || null;
   const filteredHistory = history.filter((item) => {
@@ -254,31 +464,37 @@ export default function ResultViewer() {
       })),
     currentResult.language
   );
-  const reportSummary = summaryText(currentResult);
   const insightSummary =
-    currentResult.insights?.summary ||
+    insights?.summary ||
     currentResult.analysis?.overview ||
     "AI summary will appear here once the report is analyzed.";
   const plainExplanation =
     currentResult.analysis?.plainLanguageSummary ||
     currentResult.analysis?.overview ||
     "No explanation available.";
-  const riskPredictions = (currentResult.insights?.riskPredictions || []).slice(0, 3);
-  const testEvaluations = (currentResult.insights?.testEvaluations || []).slice(0, 8);
-  const doctorRecommendations = (currentResult.insights?.doctorRecommendations || []).slice(0, 3);
+  const interactionChecks = (insights?.interactionChecks || []).slice(0, 4);
+  const lifestyleRecommendations = (insights?.lifestyleRecommendations || []).slice(0, 4);
+  const medicineReminders = (insights?.medicineReminders || []).slice(0, 6);
+  const riskPredictions = (insights?.riskPredictions || []).slice(0, 3);
+  const testEvaluations = (insights?.testEvaluations || []).slice(0, 8);
+  const doctorRecommendations = (insights?.doctorRecommendations || []).slice(0, 3);
   const historyItems = filteredHistory.slice(0, 6);
-  const abnormalCount = currentResult.insights?.testEvaluations
-    ? currentResult.insights.testEvaluations.filter((item) => item.isAbnormal).length
-    : currentResult.insights?.abnormalFindings?.length || 0;
+  const abnormalCount =
+    testEvaluations.filter((item) => item.isAbnormal).length ||
+    insights?.abnormalFindings?.length ||
+    0;
   const quickGuidance = Array.from(
     new Set(
       [
-        ...(currentResult.insights?.generalGuidance || []),
+        ...(insights?.generalGuidance || []),
         ...(currentResult.analysis?.precautions || []),
       ].filter(Boolean)
     )
   ).slice(0, 3);
   const documentType = currentResult.analysis?.documentType || "Medical report";
+  const showInteractionPanel = revealedFeaturePanels.includes("interaction-check");
+  const showLifestylePanel = revealedFeaturePanels.includes("diet-lifestyle");
+  const showReminderPanel = revealedFeaturePanels.includes("medicine-reminders");
 
   async function handleAskQuestion() {
     if (!chatInput.trim() || chatLoading) {
@@ -292,7 +508,7 @@ export default function ResultViewer() {
       createdAt: currentResult.createdAt,
       ocrText: currentResult.extractedText,
       analysis: currentResult.analysis,
-      insights: currentResult.insights,
+      insights,
       chatHistory: chatMessages
         .slice(-8)
         .map((item) => `${item.role.toUpperCase()}: ${item.message}`)
@@ -377,10 +593,45 @@ export default function ResultViewer() {
     synthesis.speak(utterance);
   }
 
+  if (hidden) {
+    return (
+      <button type="button" onClick={() => setHidden(false)} className={styles.reopenButton}>
+        <span className={styles.reopenEyebrow}>Latest analysis</span>
+        <strong className={styles.reopenTitle}>{currentResult.filename}</strong>
+        <span className={styles.reopenMeta}>
+          Open the mini result screen to review the AI summary and flagged values.
+        </span>
+      </button>
+    );
+  }
+
   return (
-    <div className={styles.panel}>
-      <div className={styles.scrollArea}>
-        <div className={styles.stickyHeader}>
+    <div className={styles.overlay} onClick={handleClose}>
+      <div
+        className={styles.panel}
+        onClick={(event) => event.stopPropagation()}
+        role="dialog"
+        aria-modal="true"
+        aria-label="Medical report analysis result"
+      >
+        <div className={styles.chromeBar}>
+          <div className={styles.chromeMeta}>
+            <div className={styles.windowDots} aria-hidden="true">
+              <span className={`${styles.windowDot} ${styles.windowDotClose}`} />
+              <span className={`${styles.windowDot} ${styles.windowDotMinimize}`} />
+              <span className={`${styles.windowDot} ${styles.windowDotExpand}`} />
+            </div>
+            <div>
+              <div className={styles.chromeLabel}>AI Analysis Screen</div>
+              <div className={styles.chromeHint}>
+                Review the summary, key flags, medicines, and follow-up guidance.
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div className={styles.scrollArea}>
+          <div className={styles.stickyHeader}>
           <div className={styles.headerRow}>
             <div className={styles.headerText}>
               <p className={styles.eyebrow}>MedScanAI Result</p>
@@ -391,8 +642,8 @@ export default function ResultViewer() {
                 <span>{documentType}</span>
               </div>
             </div>
-            <button type="button" onClick={() => setHidden(true)} className={styles.closeButton}>
-              Close
+            <button type="button" onClick={handleClose} className={styles.closeButton}>
+              Minimize
             </button>
           </div>
 
@@ -400,23 +651,23 @@ export default function ResultViewer() {
             <span className={`${styles.chip} ${styles.neutral}`}>
               {currentResult.language === "hinglish" ? "Hinglish" : currentResult.language.toUpperCase()}
             </span>
-            <span className={`${styles.chip} ${riskToneClass(currentResult.insights?.overallRisk)}`}>
-              Risk: {formatLabel(currentResult.insights?.overallRisk || "low")}
+            <span className={`${styles.chip} ${riskToneClass(insights?.overallRisk)}`}>
+              Risk: {formatLabel(insights?.overallRisk || "low")}
             </span>
             {currentResult.preprocessing?.applied ? (
               <span className={`${styles.chip} ${styles.chipAccent}`}>OCR cleanup applied</span>
             ) : null}
           </div>
-        </div>
+          </div>
 
-        <section className={`${styles.heroCard} ${riskToneClass(currentResult.insights?.overallRisk)}`}>
+        <section className={`${styles.heroCard} ${riskToneClass(insights?.overallRisk)}`}>
           <div className={styles.heroLabel}>Report snapshot</div>
           <p className={styles.heroSummary}>{insightSummary}</p>
           <div className={styles.statGrid}>
             <div className={styles.statCard}>
               <span className={styles.statLabel}>Overall risk</span>
               <strong className={styles.statValue}>
-                {formatLabel(currentResult.insights?.overallRisk || "low")}
+                {formatLabel(insights?.overallRisk || "low")}
               </strong>
               <span className={styles.statNote}>AI risk estimate</span>
             </div>
@@ -433,19 +684,19 @@ export default function ResultViewer() {
           </div>
         </section>
 
-        {currentResult.insights?.emergencyAssessment ? (
+        {insights?.emergencyAssessment ? (
           <section
             className={`${styles.alertCard} ${riskToneClass(
-              currentResult.insights.emergencyAssessment.severity
+              insights.emergencyAssessment.severity
             )}`}
           >
             <h4 className={styles.alertTitle}>
-              {currentResult.insights.emergencyAssessment.headline}
+              {insights.emergencyAssessment.headline}
             </h4>
-            <p className={styles.alertText}>{currentResult.insights.emergencyAssessment.action}</p>
-            {currentResult.insights.emergencyAssessment.criticalTests.length > 0 ? (
+            <p className={styles.alertText}>{insights.emergencyAssessment.action}</p>
+            {insights.emergencyAssessment.criticalTests.length > 0 ? (
               <div className={styles.tagRow}>
-                {currentResult.insights.emergencyAssessment.criticalTests.map((item) => (
+                {insights.emergencyAssessment.criticalTests.map((item) => (
                   <span key={item} className={styles.tag}>
                     {item}
                   </span>
@@ -455,7 +706,12 @@ export default function ResultViewer() {
           </section>
         ) : null}
 
-        <section className={styles.sectionCard}>
+        <section
+          ref={(node) => {
+            sectionRefs.current["voice-explanation"] = node;
+          }}
+          className={styles.sectionCard}
+        >
           <div className={styles.sectionHeader}>
             <div>
               <strong className={styles.sectionTitle}>Plain explanation</strong>
@@ -494,7 +750,12 @@ export default function ResultViewer() {
           </div>
         </section>
 
-        <section className={styles.sectionCard}>
+        <section
+          ref={(node) => {
+            sectionRefs.current["disease-prediction"] = node;
+          }}
+          className={styles.sectionCard}
+        >
           <div className={styles.sectionHeader}>
             <div>
               <strong className={styles.sectionTitle}>Predicted risks</strong>
@@ -542,7 +803,12 @@ export default function ResultViewer() {
           )}
         </section>
 
-        <section className={styles.sectionCard}>
+        <section
+          ref={(node) => {
+            sectionRefs.current["lab-report-flags"] = node;
+          }}
+          className={styles.sectionCard}
+        >
           <div className={styles.sectionHeader}>
             <div>
               <strong className={styles.sectionTitle}>Normal vs abnormal values</strong>
@@ -590,7 +856,12 @@ export default function ResultViewer() {
           )}
         </section>
 
-        <section className={styles.sectionCard}>
+        <section
+          ref={(node) => {
+            sectionRefs.current["medicine-analysis"] = node;
+          }}
+          className={styles.sectionCard}
+        >
           <div className={styles.sectionHeader}>
             <div>
               <strong className={styles.sectionTitle}>Medicines</strong>
@@ -660,6 +931,136 @@ export default function ResultViewer() {
           )}
         </section>
 
+        {showInteractionPanel ? (
+          <section
+            ref={(node) => {
+              sectionRefs.current["interaction-check"] = node;
+            }}
+            className={styles.sectionCard}
+          >
+            <div className={styles.sectionHeader}>
+              <div>
+                <strong className={styles.sectionTitle}>Interaction checks</strong>
+                <p className={styles.sectionHint}>
+                  Medicine combinations cross-checked against report context and safety rules.
+                </p>
+              </div>
+            </div>
+            {interactionChecks.length === 0 ? (
+              <div className={styles.emptyState}>
+                No medicine interaction concerns were inferred from the extracted report data.
+              </div>
+            ) : (
+              <div className={styles.infoStack}>
+                {interactionChecks.map((item) => (
+                  <article
+                    key={`${item.title}-${item.medicines.join("-")}`}
+                    className={`${styles.infoCard} ${riskToneClass(item.severity)}`}
+                  >
+                    <div className={styles.cardHead}>
+                      <div>
+                        <strong className={styles.cardTitle}>{item.title}</strong>
+                        <div className={styles.cardMeta}>Safety review for extracted medicines</div>
+                      </div>
+                      <span className={`${styles.badge} ${riskToneClass(item.severity)}`}>
+                        {formatLabel(item.severity)}
+                      </span>
+                    </div>
+                    {item.medicines.length > 0 ? (
+                      <div className={styles.tagRow}>
+                        {item.medicines.map((medicine) => (
+                          <span key={`${item.title}-${medicine}`} className={styles.tag}>
+                            {medicine}
+                          </span>
+                        ))}
+                      </div>
+                    ) : null}
+                    <p className={styles.detailText}>{item.explanation}</p>
+                    <ul className={styles.list}>
+                      <li>{item.recommendation}</li>
+                    </ul>
+                  </article>
+                ))}
+              </div>
+            )}
+          </section>
+        ) : null}
+
+        {showLifestylePanel ? (
+          <section
+            ref={(node) => {
+              sectionRefs.current["diet-lifestyle"] = node;
+            }}
+            className={styles.sectionCard}
+          >
+            <div className={styles.sectionHeader}>
+              <div>
+                <strong className={styles.sectionTitle}>Diet and lifestyle guidance</strong>
+                <p className={styles.sectionHint}>
+                  Recommendations generated from the findings already extracted from the report.
+                </p>
+              </div>
+            </div>
+            {lifestyleRecommendations.length === 0 ? (
+              <div className={styles.emptyState}>
+                No focused diet or lifestyle guidance was generated for this report.
+              </div>
+            ) : (
+              <div className={styles.infoStack}>
+                {lifestyleRecommendations.map((item) => (
+                  <article key={`${item.category}-${item.title}`} className={styles.infoCard}>
+                    <div className={styles.cardHead}>
+                      <div>
+                        <strong className={styles.cardTitle}>{item.title}</strong>
+                        <div className={styles.cardMeta}>{formatLabel(item.category)}</div>
+                      </div>
+                    </div>
+                    <p className={styles.detailText}>{item.details}</p>
+                  </article>
+                ))}
+              </div>
+            )}
+          </section>
+        ) : null}
+
+        {showReminderPanel ? (
+          <section
+            ref={(node) => {
+              sectionRefs.current["medicine-reminders"] = node;
+            }}
+            className={styles.sectionCard}
+          >
+            <div className={styles.sectionHeader}>
+              <div>
+                <strong className={styles.sectionTitle}>Medicine reminder plan</strong>
+                <p className={styles.sectionHint}>
+                  Schedules inferred from the extracted prescription frequency and timing cues.
+                </p>
+              </div>
+            </div>
+            {medicineReminders.length === 0 ? (
+              <div className={styles.emptyState}>
+                No medicine schedule could be inferred from this report.
+              </div>
+            ) : (
+              <div className={styles.infoStack}>
+                {medicineReminders.map((item) => (
+                  <article key={`${item.medicineName}-${item.schedule}`} className={styles.infoCard}>
+                    <div className={styles.cardHead}>
+                      <div>
+                        <strong className={styles.cardTitle}>{item.medicineName}</strong>
+                        <div className={styles.cardMeta}>{item.dosage || "Dosage not extracted"}</div>
+                      </div>
+                      <span className={styles.metricBadge}>{item.schedule}</span>
+                    </div>
+                    <p className={styles.detailText}>{item.instructions}</p>
+                  </article>
+                ))}
+              </div>
+            )}
+          </section>
+        ) : null}
+
         <section className={styles.sectionCard}>
           <div className={styles.sectionHeader}>
             <div>
@@ -685,7 +1086,12 @@ export default function ResultViewer() {
           )}
         </section>
 
-        <section className={styles.sectionCard}>
+        <section
+          ref={(node) => {
+            sectionRefs.current["specialist-match"] = node;
+          }}
+          className={styles.sectionCard}
+        >
           <div className={styles.sectionHeader}>
             <div>
               <strong className={styles.sectionTitle}>Specialist recommendation</strong>
@@ -718,7 +1124,7 @@ export default function ResultViewer() {
           )}
         </section>
 
-        {currentResult.insights?.authenticity ? (
+        {insights?.authenticity ? (
           <section className={styles.sectionCard}>
             <div className={styles.sectionHeader}>
               <div>
@@ -731,24 +1137,24 @@ export default function ResultViewer() {
                 <div className={styles.valueCard}>
                   <span className={styles.valueLabel}>Algorithm</span>
                   <strong className={styles.valueStrong}>
-                    {currentResult.insights.authenticity.algorithm}
+                    {insights.authenticity.algorithm}
                   </strong>
                 </div>
                 <div className={styles.valueCard}>
                   <span className={styles.valueLabel}>Issued</span>
                   <strong className={styles.valueStrong}>
-                    {formatDate(currentResult.insights.authenticity.issuedAt)}
+                    {formatDate(insights.authenticity.issuedAt)}
                   </strong>
                 </div>
               </div>
               <div className={styles.detailPanel}>
                 <span className={styles.detailLabel}>Block hash</span>
                 <p className={`${styles.detailBody} ${styles.monoText}`}>
-                  {currentResult.insights.authenticity.blockHash.slice(0, 24)}...
+                  {insights.authenticity.blockHash.slice(0, 24)}...
                 </p>
               </div>
               <p className={styles.detailText}>
-                {currentResult.insights.authenticity.verificationMessage}
+                {insights.authenticity.verificationMessage}
               </p>
             </article>
           </section>
@@ -880,6 +1286,7 @@ export default function ResultViewer() {
             </div>
           )}
         </section>
+      </div>
       </div>
     </div>
   );

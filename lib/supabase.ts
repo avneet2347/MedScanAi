@@ -5,11 +5,20 @@ import { publicConfig } from "@/lib/public-config";
 
 let browserClient: ReturnType<typeof createClient> | null = null;
 
+const browserAuthOptions = {
+  autoRefreshToken: true,
+  persistSession: true,
+  detectSessionInUrl: false,
+};
+
 export function getBrowserSupabaseClient() {
   if (!browserClient) {
     browserClient = createClient(
       publicConfig.supabaseUrl,
-      publicConfig.supabaseAnonKey
+      publicConfig.supabaseAnonKey,
+      {
+        auth: browserAuthOptions,
+      }
     );
   }
 

@@ -70,7 +70,30 @@ export interface MedicineDetail {
   uses: string[];
   commonSideEffects: string[];
   precautions: string[];
+  interactionWarnings: string[];
+  timingAdvice: string;
   source: "knowledge-base" | "heuristic";
+}
+
+export interface InteractionCheck {
+  title: string;
+  medicines: string[];
+  severity: RiskLevel;
+  explanation: string;
+  recommendation: string;
+}
+
+export interface LifestyleRecommendation {
+  title: string;
+  category: "diet" | "activity" | "hydration" | "monitoring";
+  details: string;
+}
+
+export interface MedicineReminder {
+  medicineName: string;
+  dosage: string;
+  schedule: string;
+  instructions: string;
 }
 
 export interface EmergencyAssessment {
@@ -160,6 +183,9 @@ export interface HealthInsights {
   testEvaluations?: TestEvaluation[];
   riskPredictions?: RiskPrediction[];
   medicineDetails?: MedicineDetail[];
+  interactionChecks?: InteractionCheck[];
+  lifestyleRecommendations?: LifestyleRecommendation[];
+  medicineReminders?: MedicineReminder[];
   emergencyAssessment?: EmergencyAssessment;
   doctorRecommendations?: DoctorRecommendation[];
   authenticity?: AuthenticityProof | null;

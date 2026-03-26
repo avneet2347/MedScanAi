@@ -105,6 +105,9 @@ export function generateHealthInsights(
     evaluations,
     riskPredictions,
     medicineDetails,
+    interactionChecks,
+    lifestyleRecommendations,
+    medicineReminders,
     doctorRecommendations,
   } = enrichReportIntelligence(analysis, language);
   const abnormalFindings: AbnormalFinding[] = [];
@@ -156,7 +159,16 @@ export function generateHealthInsights(
           hinglish: "Structured report data se koi clear abnormal value identify nahi hui.",
         });
 
+  const contextualGuidance = [
+    interactionChecks[0]?.recommendation,
+    lifestyleRecommendations[0]?.details,
+    medicineReminders[0]
+      ? `${medicineReminders[0].medicineName}: ${medicineReminders[0].schedule}.`
+      : "",
+  ].filter(Boolean);
+
   const generalGuidance = [
+    ...contextualGuidance,
     chooseLocalizedText(language, {
       en: "Use these results for awareness and discussion, not as a diagnosis or treatment plan.",
       hi: "इन परिणामों का उपयोग जागरूकता और चर्चा के लिए करें, निदान या इलाज योजना के रूप में नहीं।",
@@ -200,6 +212,9 @@ export function generateHealthInsights(
       analysis.testValues?.map((test) => evaluateTestValue(test, language)) || [],
     riskPredictions,
     medicineDetails,
+    interactionChecks,
+    lifestyleRecommendations,
+    medicineReminders,
     emergencyAssessment,
     doctorRecommendations,
     authenticity: options?.authenticity || null,

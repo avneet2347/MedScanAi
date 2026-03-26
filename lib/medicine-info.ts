@@ -231,6 +231,8 @@ export function buildMedicineDetails(
           hi: "इस सारांश पर भरोसा करने से पहले दवा का नाम फार्मासिस्ट या डॉक्टर से पुष्टि करें।",
           hinglish: "Is summary par act karne se pehle medicine name pharmacist ya doctor se confirm karein.",
         })],
+        interactionWarnings: [],
+        timingAdvice: "",
         source: "heuristic",
       };
     }
@@ -247,6 +249,8 @@ export function buildMedicineDetails(
       uses: pickLocalizedArray(language, match.uses),
       commonSideEffects: pickLocalizedArray(language, match.commonSideEffects),
       precautions: pickLocalizedArray(language, match.precautions),
+      interactionWarnings: [],
+      timingAdvice: "",
       source: "knowledge-base",
     };
   });

@@ -3,6 +3,7 @@ import { getErrorMessage, getErrorStatus, jsonError } from "@/lib/api-utils";
 import { normalizeOutputLanguage } from "@/lib/localization";
 import { generateChatReply } from "@/lib/openai-service";
 import type { HealthInsights, MedicalAnalysis } from "@/lib/report-types";
+import { requireAuthenticatedUser } from "@/lib/supabase-server";
 
 export const runtime = "nodejs";
 
@@ -15,6 +16,8 @@ type LightweightReport = {
 
 export async function POST(request: Request) {
   try {
+    await requireAuthenticatedUser(request);
+
     const body = (await request.json().catch(() => null)) as
       | {
           question?: string;

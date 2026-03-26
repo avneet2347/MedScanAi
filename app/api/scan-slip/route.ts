@@ -5,16 +5,12 @@ import {
   isAllowedUploadMimeType,
   jsonError,
 } from "@/lib/api-utils";
-import { generateHealthInsights } from "@/lib/insights";
 import { normalizeOutputLanguage } from "@/lib/localization";
-import { generateMedicalAnalysis } from "@/lib/openai-service";
-import { extractTextFromDocument } from "@/lib/ocr-service";
-import { createAuthenticityProof } from "@/lib/report-authenticity";
-import { uploadReportForUser } from "@/lib/report-upload";
 import { ensureReportInsights } from "@/lib/report-pipeline";
+import { uploadReportForUser } from "@/lib/report-upload";
 import { ensureUserProfile } from "@/lib/reports";
 import { serverConfig } from "@/lib/server-config";
-import { getOptionalAuthenticatedUser } from "@/lib/supabase-server";
+import { requireAuthenticatedUser } from "@/lib/supabase-server";
 
 export const runtime = "nodejs";
 
@@ -38,60 +34,27 @@ export async function POST(request: Request) {
       );
     }
 
-    const authState = await getOptionalAuthenticatedUser(request);
+    const { user, dataClient } = await requireAuthenticatedUser(request);
+    await ensureUserProfile(dataClient, user);
 
-    if (authState) {
-      const { user, dataClient } = authState;
-      await ensureUserProfile(dataClient, user);
-
-      const { report } = await uploadReportForUser(dataClient, user, file);
-
-      const { report: processedReport, insights } = await ensureReportInsights(
-        dataClient,
-        report.id,
-        user.id,
-        true
-      );
-
-      return NextResponse.json({
-        success: true,
-        language,
-        report: processedReport,
-        extractedText: processedReport.ocr_text,
-        analysis: processedReport.analysis_json,
-        insights,
-      });
-    }
-
-    const buffer = Buffer.from(await file.arrayBuffer());
-    const ocr = await extractTextFromDocument({
-      buffer,
-      filename: file.name || "report",
-      mimeType: file.type,
-    });
-    const analysis = await generateMedicalAnalysis({
-      extractedText: ocr.text,
-      language,
-    });
-    const authenticity = createAuthenticityProof({
-      fileBuffer: buffer,
-      ocrText: ocr.text,
-      analysis,
-    });
-    const insights = generateHealthInsights(analysis, {
-      language,
-      authenticity,
-    });
+    const { report } = await uploadReportForUser(dataClient, user, file);
+    const { report: processedReport, insights } = await ensureReportInsights(
+      dataClient,
+      report.id,
+      user.id,
+      true,
+      language
+    );
 
     return NextResponse.json({
       success: true,
       language,
-      reportId: `local-${Date.now()}`,
-      filename: file.name || "report",
-      createdAt: new Date().toISOString(),
-      report: null,
-      extractedText: ocr.text,
-      analysis,
+      reportId: processedReport.id,
+      filename: processedReport.title || processedReport.original_filename,
+      createdAt: processedReport.created_at,
+      report: processedReport,
+      extractedText: processedReport.ocr_text,
+      analysis: processedReport.analysis_json,
       insights,
     });
   } catch (error) {

@@ -19,8 +19,10 @@ Authenticated medical report processing workspace built with Next.js, Supabase, 
 1. Copy `.env.example` to `.env.local` and fill in your values.
 2. Run the SQL in [supabase/schema.sql](/c:/Users/avnee/ai2health/supabase/schema.sql) in the Supabase SQL editor.
 3. Ensure your Supabase project has email/password auth enabled.
-4. Install dependencies if needed with `npm install`.
-5. Start the app with `npm run dev`.
+4. In Supabase Auth settings, keep `Confirm email` enabled so password logins stay blocked until the user verifies their address.
+5. Add your app URL and the confirmation redirect URL to Supabase Auth redirect URLs. For local development this should include `http://localhost:3000` and `http://localhost:3000/workspace?mode=login&confirmed=1`.
+6. Install dependencies if needed with `npm install`.
+7. Start the app with `npm run dev`.
 
 ## Environment variables
 
@@ -28,6 +30,7 @@ Authenticated medical report processing workspace built with Next.js, Supabase, 
 - `OPENAI_ANALYSIS_MODEL`
 - `OPENAI_CHAT_MODEL`
 - `OPENAI_OCR_MODEL`
+- `NEXT_PUBLIC_APP_URL`
 - `NEXT_PUBLIC_SUPABASE_URL`
 - `NEXT_PUBLIC_SUPABASE_ANON_KEY`
 - `SUPABASE_STORAGE_BUCKET`

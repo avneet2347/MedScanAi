@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect } from "react";
+import { getBrowserSupabaseClient } from "@/lib/supabase";
 
 declare global {
   interface Window {
@@ -18,6 +19,8 @@ function getActiveLanguage() {
 
   return "en";
 }
+
+const supabase = getBrowserSupabaseClient();
 
 async function preprocessImageForOcr(file: File) {
   if (!file.type.startsWith("image/")) {
@@ -100,15 +103,7 @@ export default function AutoAnalyzer() {
   useEffect(() => {
     let inflight = false;
 
-    const handleClick = async (event: MouseEvent) => {
-      const target = event.target;
-
-      if (!(target instanceof Element)) {
-        return;
-      }
-
-      const button = target.closest(".btn-analyze");
-
+    const runAnalysis = async (button: HTMLButtonElement | null) => {
       if (!(button instanceof HTMLButtonElement) || inflight) {
         return;
       }
@@ -132,12 +127,27 @@ export default function AutoAnalyzer() {
         const formData = new FormData();
         formData.append("file", file);
         formData.append("language", language);
+        const { data } = await supabase.auth.getSession();
+
+        if (!data.session?.access_token) {
+          window.location.assign("/signup");
+          return;
+        }
+
+        const headers = new Headers();
+        headers.set("Authorization", `Bearer ${data.session.access_token}`);
 
         const response = await fetch("/api/scan-slip", {
           method: "POST",
+          headers,
           body: formData,
         });
         const payload = await response.json();
+
+        if (response.status === 401 || response.status === 403) {
+          window.location.assign("/signup");
+          return;
+        }
 
         if (!response.ok) {
           throw new Error(payload?.error || "Analysis failed");
@@ -153,7 +163,6 @@ export default function AutoAnalyzer() {
             mode: preprocessingApplied ? "client-threshold-cleanup" : "original-file",
           },
         });
-        alert("Analysis complete");
       } catch (error) {
         console.error(error);
         alert(error instanceof Error ? error.message : "Error analyzing file");
@@ -163,10 +172,15 @@ export default function AutoAnalyzer() {
       }
     };
 
-    document.addEventListener("click", handleClick);
+    const handleProgrammaticAnalyze = () => {
+      const button = document.querySelector(".btn-analyze") as HTMLButtonElement | null;
+      void runAnalysis(button);
+    };
+
+    window.addEventListener("medscan:analyze", handleProgrammaticAnalyze);
 
     return () => {
-      document.removeEventListener("click", handleClick);
+      window.removeEventListener("medscan:analyze", handleProgrammaticAnalyze);
     };
   }, []);
 

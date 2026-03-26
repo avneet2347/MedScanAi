@@ -11,7 +11,13 @@ import {
   saveOcrResult,
   updateReportState,
 } from "@/lib/reports";
-import type { HealthInsights, MedicalAnalysis, OcrResult, ReportRecord } from "@/lib/report-types";
+import type {
+  HealthInsights,
+  MedicalAnalysis,
+  OcrResult,
+  OutputLanguage,
+  ReportRecord,
+} from "@/lib/report-types";
 
 export async function downloadReportFile(
   supabase: SupabaseClient,
@@ -70,11 +76,16 @@ export async function ensureReportAnalysis(
   supabase: SupabaseClient,
   reportId: string,
   userId?: string,
-  force = false
+  force = false,
+  language?: OutputLanguage
 ): Promise<{ report: ReportRecord; analysis: MedicalAnalysis }> {
   const report = await getReportById(supabase, reportId);
 
-  if (report.analysis_json && !force) {
+  if (
+    report.analysis_json &&
+    !force &&
+    (!language || !report.insights_json?.preferredLanguage || report.insights_json.preferredLanguage === language)
+  ) {
     return {
       report,
       analysis: report.analysis_json,
@@ -101,6 +112,7 @@ export async function ensureReportAnalysis(
     const analysis = await generateMedicalAnalysis({
       extractedText: ocrState.ocr.text,
       userId,
+      language: language || report.insights_json?.preferredLanguage || "en",
     });
     const updatedReport = await saveAnalysis(supabase, reportId, analysis);
 
@@ -121,15 +133,23 @@ export async function ensureReportInsights(
   supabase: SupabaseClient,
   reportId: string,
   userId?: string,
-  force = false
+  force = false,
+  language?: OutputLanguage
 ): Promise<{ report: ReportRecord; insights: HealthInsights }> {
   const report = await getReportById(supabase, reportId);
 
   if (
     report.insights_json &&
     !force &&
+    (!language || report.insights_json.preferredLanguage === language) &&
     report.insights_json.testEvaluations &&
     report.insights_json.riskPredictions &&
+    report.insights_json.medicineDetails &&
+    report.insights_json.interactionChecks &&
+    report.insights_json.lifestyleRecommendations &&
+    report.insights_json.medicineReminders &&
+    report.insights_json.emergencyAssessment &&
+    report.insights_json.doctorRecommendations &&
     report.insights_json.authenticity
   ) {
     return {
@@ -144,10 +164,10 @@ export async function ensureReportInsights(
         report,
         analysis: report.analysis_json,
       }
-    : await ensureReportAnalysis(supabase, reportId, userId, force);
+    : await ensureReportAnalysis(supabase, reportId, userId, force, language);
 
   try {
-    const language = report.insights_json?.preferredLanguage || "en";
+    const insightLanguage = language || report.insights_json?.preferredLanguage || "en";
     const authenticity =
       !force && report.insights_json?.authenticity
         ? report.insights_json.authenticity
@@ -157,7 +177,7 @@ export async function ensureReportInsights(
             analysis: analysisState.analysis,
           });
     const insights = generateHealthInsights(analysisState.analysis, {
-      language,
+      language: insightLanguage,
       authenticity,
     });
     const updatedReport = await saveInsights(supabase, reportId, insights);
