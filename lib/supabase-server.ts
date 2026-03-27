@@ -27,6 +27,18 @@ export function createSupabaseUserClient(accessToken: string) {
   });
 }
 
+export function createSupabaseServiceClient() {
+  const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY || null;
+
+  if (!serviceRoleKey) {
+    return null;
+  }
+
+  return createClient(publicConfig.supabaseUrl, serviceRoleKey, {
+    auth: authOptions,
+  });
+}
+
 function assertEmailConfirmed(user: User) {
   if (!user.email_confirmed_at) {
     throw new ApiError(

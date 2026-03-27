@@ -7,6 +7,7 @@ import {
 } from "@/lib/clinical-support";
 import { buildMedicineDetails } from "@/lib/medicine-info";
 import type {
+  ConditionInsight,
   DoctorRecommendation,
   HealthInsights,
   InteractionCheck,
@@ -138,6 +139,235 @@ export function canonicalizeMetricName(name: string) {
   }
 
   return normalized.replace(/\s+/g, "_");
+}
+
+function normalizeLookupText(value: string) {
+  return value.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+}
+
+type ResolvedTrendMetric = {
+  metricKey: string;
+  label: string;
+};
+
+function resolveTrendMetric(name: string): ResolvedTrendMetric | null {
+  const normalized = normalizeLookupText(name);
+
+  if (!normalized) {
+    return null;
+  }
+
+  if (normalized.includes("hba1c") || normalized.includes("glycated hemoglobin")) {
+    return { metricKey: "hba1c", label: "HbA1c" };
+  }
+
+  if (
+    normalized === "fbs" ||
+    normalized === "fasting glucose" ||
+    normalized === "fasting blood sugar" ||
+    normalized === "fasting blood glucose" ||
+    (normalized.includes("fasting") &&
+      (normalized.includes("glucose") || normalized.includes("blood sugar")))
+  ) {
+    return { metricKey: "fasting_glucose", label: "Fasting Glucose" };
+  }
+
+  if (
+    normalized === "ppbs" ||
+    normalized === "postprandial glucose" ||
+    normalized === "post prandial glucose" ||
+    normalized === "post prandial blood sugar" ||
+    normalized === "post meal glucose" ||
+    normalized === "post meal blood sugar" ||
+    ((normalized.includes("post") || normalized.includes("meal")) &&
+      (normalized.includes("glucose") || normalized.includes("blood sugar")))
+  ) {
+    return { metricKey: "postprandial_glucose", label: "Postprandial Glucose" };
+  }
+
+  if (
+    normalized === "glucose" ||
+    normalized === "blood glucose" ||
+    normalized === "blood sugar" ||
+    normalized === "serum glucose" ||
+    normalized === "random glucose" ||
+    normalized === "random blood sugar" ||
+    normalized.includes("glucose") ||
+    normalized.includes("blood sugar")
+  ) {
+    return { metricKey: "blood_glucose", label: "Glucose" };
+  }
+
+  if (normalized === "bp" || normalized.includes("blood pressure")) {
+    return { metricKey: "blood_pressure", label: "Blood Pressure" };
+  }
+
+  if (
+    normalized === "hemoglobin" ||
+    normalized === "haemoglobin" ||
+    normalized === "hb" ||
+    normalized.includes("hemoglobin")
+  ) {
+    return { metricKey: "hemoglobin", label: "Hemoglobin" };
+  }
+
+  if (normalized.includes("hdl")) {
+    return { metricKey: "hdl_cholesterol", label: "HDL Cholesterol" };
+  }
+
+  if (normalized.includes("ldl")) {
+    return { metricKey: "ldl_cholesterol", label: "LDL Cholesterol" };
+  }
+
+  if (normalized.includes("triglyceride")) {
+    return { metricKey: "triglycerides", label: "Triglycerides" };
+  }
+
+  if (
+    normalized === "cholesterol" ||
+    normalized === "total cholesterol" ||
+    normalized === "serum cholesterol" ||
+    normalized.includes("cholesterol")
+  ) {
+    return { metricKey: "cholesterol", label: "Cholesterol" };
+  }
+
+  if (normalized.includes("creatinine")) {
+    return { metricKey: "creatinine", label: "Creatinine" };
+  }
+
+  if (normalized.includes("tsh") || normalized.includes("thyroid")) {
+    return { metricKey: "tsh", label: "TSH" };
+  }
+
+  if (normalized.includes("potassium")) {
+    return { metricKey: "potassium", label: "Potassium" };
+  }
+
+  if (normalized.includes("sodium")) {
+    return { metricKey: "sodium", label: "Sodium" };
+  }
+
+  return null;
+}
+
+function metricQuestionAliases(metricKey: string) {
+  switch (metricKey) {
+    case "blood_glucose":
+      return ["glucose", "blood glucose", "blood sugar", "sugar", "random sugar"];
+    case "fasting_glucose":
+      return ["fasting glucose", "fasting blood sugar", "fasting sugar", "fbs"];
+    case "postprandial_glucose":
+      return ["postprandial", "post meal sugar", "post meal glucose", "ppbs"];
+    case "blood_pressure":
+      return ["blood pressure", "bp", "pressure"];
+    case "hemoglobin":
+      return ["hemoglobin", "haemoglobin", "hb"];
+    case "hba1c":
+      return ["hba1c", "a1c", "glycated hemoglobin"];
+    case "cholesterol":
+      return ["cholesterol", "total cholesterol"];
+    case "hdl_cholesterol":
+      return ["hdl"];
+    case "ldl_cholesterol":
+      return ["ldl"];
+    case "triglycerides":
+      return ["triglycerides", "triglyceride"];
+    case "creatinine":
+      return ["creatinine"];
+    case "tsh":
+      return ["tsh", "thyroid"];
+    case "potassium":
+      return ["potassium"];
+    case "sodium":
+      return ["sodium"];
+    default:
+      return [];
+  }
+}
+
+function includesNormalizedText(haystack: string, needle: string) {
+  const normalizedNeedle = normalizeLookupText(needle);
+
+  if (!normalizedNeedle) {
+    return false;
+  }
+
+  if (haystack.includes(normalizedNeedle)) {
+    return true;
+  }
+
+  const tokens = normalizedNeedle.split(" ").filter((token) => token.length > 2);
+  return tokens.length > 0 && tokens.every((token) => haystack.includes(token));
+}
+
+function findMatchingEvaluation(question: string, evaluations: TestEvaluation[]) {
+  return evaluations.find((evaluation) => {
+    if (includesNormalizedText(question, evaluation.name)) {
+      return true;
+    }
+
+    return metricQuestionAliases(evaluation.metricKey).some((alias) =>
+      question.includes(alias)
+    );
+  });
+}
+
+function findMatchingMedicineDetail(question: string, medicineDetails: MedicineDetail[]) {
+  return medicineDetails.find((detail) => includesNormalizedText(question, detail.name));
+}
+
+function findMatchingTrend(question: string, trends: TrendInsight[]) {
+  return trends.find((trend) => {
+    if (includesNormalizedText(question, trend.testName)) {
+      return true;
+    }
+
+    return metricQuestionAliases(trend.metricKey).some((alias) => question.includes(alias));
+  });
+}
+
+function findMatchingCondition(question: string, conditions: ConditionInsight[]) {
+  return conditions.find((condition) => includesNormalizedText(question, condition.name));
+}
+
+function buildEvaluationAnswer(evaluation: TestEvaluation, language: OutputLanguage) {
+  return chooseLocalizedText(language, {
+    en: `${evaluation.name}: ${evaluation.value}${evaluation.unit ? ` ${evaluation.unit}` : ""}. ${evaluation.explanation} ${evaluation.normalRangeSummary}`,
+    hi: `${evaluation.name}: ${evaluation.value}${evaluation.unit ? ` ${evaluation.unit}` : ""}. ${evaluation.explanation} ${evaluation.normalRangeSummary}`,
+    hinglish: `${evaluation.name}: ${evaluation.value}${evaluation.unit ? ` ${evaluation.unit}` : ""}. ${evaluation.explanation} ${evaluation.normalRangeSummary}`,
+  });
+}
+
+function buildHistoryReportsForFallback(payload: {
+  currentAnalysis: MedicalAnalysis | null | undefined;
+  currentReportTitle?: string | null;
+  currentReportCreatedAt?: string;
+  history: Array<{
+    title?: string | null;
+    createdAt?: string;
+    analysis?: MedicalAnalysis | null;
+  }>;
+}) {
+  return payload.history
+    .map((report, index) => ({
+      id: `history-${index}`,
+      title: report.title,
+      createdAt: report.createdAt || new Date().toISOString(),
+      analysis: report.analysis,
+    }))
+    .concat(
+      payload.currentAnalysis
+        ? [
+            {
+              id: "current",
+              title: payload.currentReportTitle || "Current report",
+              createdAt: payload.currentReportCreatedAt || new Date().toISOString(),
+              analysis: payload.currentAnalysis,
+            },
+          ]
+        : []
+    );
 }
 
 export function evaluateTestValue(
@@ -877,8 +1107,9 @@ export function buildTrendDataPoints(
   for (const report of reports) {
     for (const test of report.analysis?.testValues || []) {
       const evaluation = evaluateTestValue(test);
+      const resolvedMetric = resolveTrendMetric(test.name);
 
-      if (evaluation.numericValue === null) {
+      if (evaluation.numericValue === null || !resolvedMetric) {
         continue;
       }
 
@@ -886,8 +1117,8 @@ export function buildTrendDataPoints(
         reportId: report.id,
         reportLabel: report.title || report.id,
         createdAt: report.createdAt,
-        metricKey: evaluation.metricKey,
-        testName: test.name,
+        metricKey: resolvedMetric.metricKey,
+        testName: resolvedMetric.label,
         value: evaluation.numericValue,
         unit: test.unit,
         status: evaluation.status,
@@ -983,6 +1214,12 @@ export function buildHistoricalContext(
   }
 
   return reports
+    .slice()
+    .sort((left, right) => {
+      const leftTime = left.createdAt ? new Date(left.createdAt).getTime() : 0;
+      const rightTime = right.createdAt ? new Date(right.createdAt).getTime() : 0;
+      return leftTime - rightTime;
+    })
     .slice(-5)
     .map((report) => {
       const dateLabel = report.createdAt
@@ -1195,4 +1432,330 @@ export function buildFeatureAwareFallbackChatReply(payload: {
   }
 
   return buildFallbackChatReply(payload);
+}
+
+export function buildGroundedReportChatReply(payload: {
+  question: string;
+  currentAnalysis: MedicalAnalysis | null | undefined;
+  currentInsights: HealthInsights | null | undefined;
+  currentReportTitle?: string | null;
+  currentReportCreatedAt?: string;
+  history: Array<{
+    title?: string | null;
+    createdAt?: string;
+    analysis?: MedicalAnalysis | null;
+  }>;
+  language: OutputLanguage;
+}) {
+  const normalizedQuestion = normalizeLookupText(payload.question);
+  const fallbackEnrichment = payload.currentAnalysis
+    ? enrichReportIntelligence(payload.currentAnalysis, payload.language)
+    : null;
+  const evaluations =
+    payload.currentInsights?.testEvaluations ||
+    fallbackEnrichment?.evaluations ||
+    (payload.currentAnalysis?.testValues || []).map((test) =>
+      evaluateTestValue(test, payload.language)
+    );
+  const interactionChecks =
+    payload.currentInsights?.interactionChecks ||
+    fallbackEnrichment?.interactionChecks ||
+    [];
+  const lifestyleRecommendations =
+    payload.currentInsights?.lifestyleRecommendations ||
+    fallbackEnrichment?.lifestyleRecommendations ||
+    [];
+  const medicineReminders =
+    payload.currentInsights?.medicineReminders ||
+    fallbackEnrichment?.medicineReminders ||
+    [];
+  const medicineDetails =
+    payload.currentInsights?.medicineDetails || fallbackEnrichment?.medicineDetails || [];
+  const riskPredictions =
+    payload.currentInsights?.riskPredictions || fallbackEnrichment?.riskPredictions || [];
+  const doctorRecommendations =
+    payload.currentInsights?.doctorRecommendations ||
+    fallbackEnrichment?.doctorRecommendations ||
+    [];
+  const emergencyAssessment =
+    payload.currentInsights?.emergencyAssessment ||
+    buildEmergencyAssessment(evaluations, payload.language);
+  const possibleConditions = payload.currentAnalysis?.possibleConditions || [];
+  const abnormal = evaluations.filter((item) => item.isAbnormal);
+  const trends = buildTrendInsights(
+    buildHistoryReportsForFallback({
+      currentAnalysis: payload.currentAnalysis,
+      currentReportTitle: payload.currentReportTitle,
+      currentReportCreatedAt: payload.currentReportCreatedAt,
+      history: payload.history,
+    }),
+    payload.language
+  );
+  const matchingEvaluation = findMatchingEvaluation(normalizedQuestion, evaluations);
+
+  if (matchingEvaluation) {
+    const matchingTrend = findMatchingTrend(normalizedQuestion, trends);
+    return [buildEvaluationAnswer(matchingEvaluation, payload.language), matchingTrend?.summary]
+      .filter(Boolean)
+      .join(" ");
+  }
+
+  const matchingMedicine = findMatchingMedicineDetail(normalizedQuestion, medicineDetails);
+
+  if (matchingMedicine) {
+    const reminder = medicineReminders.find((item) =>
+      includesNormalizedText(normalizeLookupText(item.medicineName), matchingMedicine.name)
+    );
+
+    return chooseLocalizedText(payload.language, {
+      en: `${matchingMedicine.name}: ${matchingMedicine.summary}${reminder ? ` Schedule: ${reminder.schedule}. ${reminder.instructions}` : ""}`,
+      hi: `${matchingMedicine.name}: ${matchingMedicine.summary}${reminder ? ` Schedule: ${reminder.schedule}. ${reminder.instructions}` : ""}`,
+      hinglish: `${matchingMedicine.name}: ${matchingMedicine.summary}${reminder ? ` Schedule: ${reminder.schedule}. ${reminder.instructions}` : ""}`,
+    });
+  }
+
+  if (
+    normalizedQuestion.includes("interaction") ||
+    normalizedQuestion.includes("combine") ||
+    normalizedQuestion.includes("together") ||
+    normalizedQuestion.includes("saath")
+  ) {
+    if (interactionChecks.length === 0) {
+      return chooseLocalizedText(payload.language, {
+        en: "I could not identify enough medicine context to run an interaction check from the current report.",
+        hi: "à¤®à¥Œà¤œà¥‚à¤¦à¤¾ à¤°à¤¿à¤ªà¥‹à¤°à¥à¤Ÿ à¤¸à¥‡ à¤‡à¤‚à¤Ÿà¤°à¥ˆà¤•à¥à¤¶à¤¨ à¤šà¥‡à¤• à¤•à¥‡ à¤²à¤¿à¤ à¤ªà¤°à¥à¤¯à¤¾à¤ªà¥à¤¤ à¤¦à¤µà¤¾ à¤¸à¤‚à¤¦à¤°à¥à¤­ à¤¨à¤¹à¥€à¤‚ à¤®à¤¿à¤²à¤¾à¥¤",
+        hinglish: "Current report se interaction check ke liye enough medicine context nahi mila.",
+      });
+    }
+
+    return interactionChecks
+      .slice(0, 3)
+      .map((item) => `${item.title}: ${item.recommendation}`)
+      .join(" ");
+  }
+
+  if (
+    normalizedQuestion.includes("diet") ||
+    normalizedQuestion.includes("food") ||
+    normalizedQuestion.includes("lifestyle") ||
+    normalizedQuestion.includes("exercise") ||
+    normalizedQuestion.includes("aahar") ||
+    normalizedQuestion.includes("khana")
+  ) {
+    if (lifestyleRecommendations.length === 0) {
+      return chooseLocalizedText(payload.language, {
+        en: "I do not have enough structured findings to suggest a focused lifestyle plan from this report alone.",
+        hi: "à¤•à¥‡à¤µà¤² à¤‡à¤¸ à¤°à¤¿à¤ªà¥‹à¤°à¥à¤Ÿ à¤¸à¥‡ à¤•à¥‡à¤‚à¤¦à¥à¤°à¤¿à¤¤ à¤²à¤¾à¤‡à¤«à¤¸à¥à¤Ÿà¤¾à¤‡à¤² à¤ªà¥à¤²à¤¾à¤¨ à¤¸à¥à¤à¤¾à¤¨à¥‡ à¤•à¥‡ à¤²à¤¿à¤ à¤®à¥‡à¤°à¥‡ à¤ªà¤¾à¤¸ à¤ªà¤°à¥à¤¯à¤¾à¤ªà¥à¤¤ à¤¸à¤‚à¤°à¤šà¤¿à¤¤ à¤œà¤¾à¤¨à¤•à¤¾à¤°à¥€ à¤¨à¤¹à¥€à¤‚ à¤¹à¥ˆà¥¤",
+        hinglish: "Sirf is report se focused lifestyle plan suggest karne ke liye mere paas enough structured info nahi hai.",
+      });
+    }
+
+    return lifestyleRecommendations
+      .slice(0, 3)
+      .map((item) => `${item.title}: ${item.details}`)
+      .join(" ");
+  }
+
+  if (
+    normalizedQuestion.includes("reminder") ||
+    normalizedQuestion.includes("schedule") ||
+    normalizedQuestion.includes("timing") ||
+    normalizedQuestion.includes("dose") ||
+    normalizedQuestion.includes("kab")
+  ) {
+    if (medicineReminders.length === 0) {
+      return chooseLocalizedText(payload.language, {
+        en: "No medicine schedule could be inferred because the report did not clearly include medicines or dosing frequency.",
+        hi: "à¤•à¥‹à¤ˆ à¤¦à¤µà¤¾ à¤¶à¥‡à¤¡à¥à¤¯à¥‚à¤² à¤¨à¤¹à¥€à¤‚ à¤¨à¤¿à¤•à¤¾à¤²à¤¾ à¤œà¤¾ à¤¸à¤•à¤¾ à¤•à¥à¤¯à¥‹à¤‚à¤•à¤¿ à¤°à¤¿à¤ªà¥‹à¤°à¥à¤Ÿ à¤®à¥‡à¤‚ à¤¦à¤µà¤¾à¤à¤‚ à¤¯à¤¾ à¤¡à¥‹à¤œà¤¼ à¤«à¥à¤°à¥€à¤•à¥à¤µà¥‡à¤‚à¤¸à¥€ à¤¸à¥à¤ªà¤·à¥à¤Ÿ à¤¨à¤¹à¥€à¤‚ à¤¥à¥€à¥¤",
+        hinglish: "Medicine schedule infer nahi ho saka kyunki report me medicines ya dosing frequency clear nahi thi.",
+      });
+    }
+
+    return medicineReminders
+      .slice(0, 3)
+      .map((item) => `${item.medicineName}: ${item.schedule}. ${item.instructions}`)
+      .join(" ");
+  }
+
+  if (normalizedQuestion.includes("trend") || normalizedQuestion.includes("compare")) {
+    const matchingTrend = findMatchingTrend(normalizedQuestion, trends);
+
+    if (matchingTrend) {
+      return matchingTrend.summary;
+    }
+
+    if (trends.length === 0) {
+      return chooseLocalizedText(payload.language, {
+        en: "I do not have enough previous numeric reports to compare trends yet.",
+        hi: "à¤®à¥‡à¤°à¥‡ à¤ªà¤¾à¤¸ à¤…à¤­à¥€ à¤Ÿà¥à¤°à¥‡à¤‚à¤¡ à¤¤à¥à¤²à¤¨à¤¾ à¤•à¥‡ à¤²à¤¿à¤ à¤ªà¤°à¥à¤¯à¤¾à¤ªà¥à¤¤ à¤ªà¥à¤°à¤¾à¤¨à¥€ à¤¸à¤‚à¤–à¥à¤¯à¤¾à¤¤à¥à¤®à¤• à¤°à¤¿à¤ªà¥‹à¤°à¥à¤Ÿ à¤¨à¤¹à¥€à¤‚ à¤¹à¥ˆà¤‚à¥¤",
+        hinglish: "Mere paas abhi trend compare karne ke liye enough previous numeric reports nahi hain.",
+      });
+    }
+
+    return trends.map((trend) => trend.summary).join(" ");
+  }
+
+  if (
+    normalizedQuestion.includes("abnormal") ||
+    normalizedQuestion.includes("risk") ||
+    normalizedQuestion.includes("danger") ||
+    normalizedQuestion.includes("alert")
+  ) {
+    if (abnormal.length === 0) {
+      return chooseLocalizedText(payload.language, {
+        en: "I did not detect clear abnormal values in the structured data, but you should still review the original report with a clinician if you have symptoms.",
+        hi: "à¤¸à¤‚à¤°à¤šà¤¿à¤¤ à¤¡à¥‡à¤Ÿà¤¾ à¤®à¥‡à¤‚ à¤®à¥à¤à¥‡ à¤¸à¥à¤ªà¤·à¥à¤Ÿ à¤…à¤¸à¤¾à¤®à¤¾à¤¨à¥à¤¯ à¤®à¤¾à¤¨ à¤¨à¤¹à¥€à¤‚ à¤®à¤¿à¤²à¥‡, à¤²à¥‡à¤•à¤¿à¤¨ à¤²à¤•à¥à¤·à¤£ à¤¹à¥‹à¤‚ à¤¤à¥‹ à¤®à¥‚à¤² à¤°à¤¿à¤ªà¥‹à¤°à¥à¤Ÿ à¤¡à¥‰à¤•à¥à¤Ÿà¤° à¤•à¥‹ à¤¦à¤¿à¤–à¤¾à¤à¤‚à¥¤",
+        hinglish: "Structured data me clear abnormal values detect nahi hue, lekin symptoms hon to original report clinician ko dikhayein.",
+      });
+    }
+
+    return [
+      payload.currentInsights?.overallRisk
+        ? chooseLocalizedText(payload.language, {
+            en: `Overall extracted risk is ${payload.currentInsights.overallRisk}.`,
+            hi: `Overall extracted risk ${payload.currentInsights.overallRisk} hai.`,
+            hinglish: `Overall extracted risk ${payload.currentInsights.overallRisk} hai.`,
+          })
+        : null,
+      abnormal
+        .slice(0, 3)
+        .map((item) => `${item.name}: ${item.explanation}`)
+        .join(" "),
+      payload.currentInsights?.alerts
+        ?.slice(0, 2)
+        .map((item) => item.recommendation)
+        .join(" "),
+    ]
+      .filter(Boolean)
+      .join(" ");
+  }
+
+  const matchingCondition = findMatchingCondition(normalizedQuestion, possibleConditions);
+
+  if (matchingCondition) {
+    return chooseLocalizedText(payload.language, {
+      en: `${matchingCondition.name}: ${matchingCondition.explanation} Evidence: ${matchingCondition.evidence}. Confidence: ${matchingCondition.confidence}.`,
+      hi: `${matchingCondition.name}: ${matchingCondition.explanation} Evidence: ${matchingCondition.evidence}. Confidence: ${matchingCondition.confidence}.`,
+      hinglish: `${matchingCondition.name}: ${matchingCondition.explanation} Evidence: ${matchingCondition.evidence}. Confidence: ${matchingCondition.confidence}.`,
+    });
+  }
+
+  if (
+    normalizedQuestion.includes("condition") ||
+    normalizedQuestion.includes("problem") ||
+    normalizedQuestion.includes("issue") ||
+    normalizedQuestion.includes("diagnosis")
+  ) {
+    if (possibleConditions.length === 0 && riskPredictions.length === 0) {
+      return chooseLocalizedText(payload.language, {
+        en: "No specific condition was confidently inferred from the extracted report data.",
+        hi: "Extracted report data se koi specific condition confidently infer nahi hui.",
+        hinglish: "Extracted report data se koi specific condition confidently infer nahi hui.",
+      });
+    }
+
+    return [
+      possibleConditions
+        .slice(0, 2)
+        .map((item) => `${item.name}: ${item.explanation}`)
+        .join(" "),
+      riskPredictions
+        .slice(0, 2)
+        .map((item) => `${item.condition}: ${item.rationale.join(", ")}`)
+        .join(" "),
+    ]
+      .filter(Boolean)
+      .join(" ");
+  }
+
+  if (normalizedQuestion.includes("medicine")) {
+    if (medicineDetails.length === 0) {
+      return chooseLocalizedText(payload.language, {
+        en: "No medicines were clearly extracted from the current report.",
+        hi: "à¤®à¥Œà¤œà¥‚à¤¦à¤¾ à¤°à¤¿à¤ªà¥‹à¤°à¥à¤Ÿ à¤¸à¥‡ à¤•à¥‹à¤ˆ à¤¦à¤µà¤¾ à¤¸à¥à¤ªà¤·à¥à¤Ÿ à¤°à¥‚à¤ª à¤¸à¥‡ à¤¨à¤¹à¥€à¤‚ à¤¨à¤¿à¤•à¤²à¥€à¥¤",
+        hinglish: "Current report se koi medicine clearly extract nahi hui.",
+      });
+    }
+
+    return medicineDetails
+      .slice(0, 2)
+      .map((item) => `${item.name}: ${item.summary}`)
+      .join(" ");
+  }
+
+  if (
+    normalizedQuestion.includes("doctor") ||
+    normalizedQuestion.includes("specialist") ||
+    normalizedQuestion.includes("consult")
+  ) {
+    if (doctorRecommendations.length === 0) {
+      return chooseLocalizedText(payload.language, {
+        en: "No specialist recommendation is available from the extracted report data.",
+        hi: "Extracted report data se koi specialist recommendation available nahi hai.",
+        hinglish: "Extracted report data se koi specialist recommendation available nahi hai.",
+      });
+    }
+
+    return doctorRecommendations
+      .slice(0, 2)
+      .map((item) => `${item.specialist}: ${item.reason}`)
+      .join(" ");
+  }
+
+  if (
+    normalizedQuestion.includes("emergency") ||
+    normalizedQuestion.includes("urgent") ||
+    normalizedQuestion.includes("critical")
+  ) {
+    return `${emergencyAssessment.headline}. ${emergencyAssessment.action}`;
+  }
+
+  if (
+    normalizedQuestion.includes("precaution") ||
+    normalizedQuestion.includes("care") ||
+    normalizedQuestion.includes("next step") ||
+    normalizedQuestion.includes("follow up") ||
+    normalizedQuestion.includes("guidance")
+  ) {
+    const guidance = Array.from(
+      new Set(
+        [
+          ...(payload.currentInsights?.generalGuidance || []),
+          ...(payload.currentAnalysis?.precautions || []),
+          ...(payload.currentAnalysis?.followUpQuestions || []),
+        ].filter(Boolean)
+      )
+    );
+
+    if (guidance.length === 0) {
+      return chooseLocalizedText(payload.language, {
+        en: "No clear follow-up guidance was extracted from this report.",
+        hi: "Is report se koi clear follow-up guidance extract nahi hui.",
+        hinglish: "Is report se koi clear follow-up guidance extract nahi hui.",
+      });
+    }
+
+    return guidance.slice(0, 3).join(" ");
+  }
+
+  return (
+    [
+      payload.currentAnalysis?.plainLanguageSummary,
+      payload.currentInsights?.summary,
+      payload.currentInsights?.overallRisk
+        ? chooseLocalizedText(payload.language, {
+            en: `Overall extracted risk: ${payload.currentInsights.overallRisk}.`,
+            hi: `Overall extracted risk: ${payload.currentInsights.overallRisk}.`,
+            hinglish: `Overall extracted risk: ${payload.currentInsights.overallRisk}.`,
+          })
+        : null,
+    ]
+      .filter(Boolean)
+      .join(" ") ||
+    chooseLocalizedText(payload.language, {
+      en: "I can answer questions about the report summary, medicines, abnormal values, and trends.",
+      hi: "à¤®à¥ˆà¤‚ à¤°à¤¿à¤ªà¥‹à¤°à¥à¤Ÿ à¤¸à¤¾à¤°à¤¾à¤‚à¤¶, à¤¦à¤µà¤¾à¤“à¤‚, à¤…à¤¸à¤¾à¤®à¤¾à¤¨à¥à¤¯ à¤®à¤¾à¤¨à¥‹à¤‚ à¤”à¤° à¤Ÿà¥à¤°à¥‡à¤‚à¤¡à¥à¤¸ à¤ªà¤° à¤¸à¤µà¤¾à¤²à¥‹à¤‚ à¤•à¥‡ à¤œà¤µà¤¾à¤¬ à¤¦à¥‡ à¤¸à¤•à¤¤à¤¾ à¤¹à¥‚à¤à¥¤",
+      hinglish: "Main report summary, medicines, abnormal values aur trends par sawalon ka jawab de sakta hoon.",
+    })
+  );
 }

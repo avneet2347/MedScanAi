@@ -1,5 +1,11 @@
 import type { SupabaseClient, User } from "@supabase/supabase-js";
+import { ApiError } from "@/lib/api-utils";
 import { sanitizeFilename, titleFromFilename } from "@/lib/api-utils";
+import {
+  ensureReportStorageBucket,
+  getMissingStorageBucketMessage,
+  isStorageBucketNotFoundError,
+} from "@/lib/report-storage";
 import { createReportRecord } from "@/lib/reports";
 import type { ReportRecord } from "@/lib/report-types";
 import { serverConfig } from "@/lib/server-config";
@@ -20,15 +26,27 @@ export async function uploadReportForUser(
   const storagePath = `${user.id}/${Date.now()}-${safeFilename}`;
   const buffer = Buffer.from(await file.arrayBuffer());
 
-  const { error: uploadError } = await supabase.storage
-    .from(serverConfig.storageBucket)
-    .upload(storagePath, buffer, {
-      contentType: file.type,
-      cacheControl: "3600",
-      upsert: false,
-    });
+  const uploadToStorage = async () =>
+    supabase.storage
+      .from(serverConfig.storageBucket)
+      .upload(storagePath, buffer, {
+        contentType: file.type,
+        cacheControl: "3600",
+        upsert: false,
+      });
+
+  let { error: uploadError } = await uploadToStorage();
+
+  if (isStorageBucketNotFoundError(uploadError)) {
+    await ensureReportStorageBucket(supabase);
+    ({ error: uploadError } = await uploadToStorage());
+  }
 
   if (uploadError) {
+    if (isStorageBucketNotFoundError(uploadError)) {
+      throw new ApiError(getMissingStorageBucketMessage(), 503);
+    }
+
     throw new Error(uploadError.message);
   }
 

@@ -2,13 +2,79 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fromBuffer } from "pdf2pic";
+import sharp from "sharp";
 import tesseract from "node-tesseract-ocr";
-import { ApiError, normalizeText } from "@/lib/api-utils";
-import { extractTextWithOpenAI } from "@/lib/openai-service";
+import { getErrorMessage, normalizeText } from "@/lib/api-utils";
+import {
+  cleanAndStructureMedicalOcrText,
+  extractTextWithGemini,
+  extractTextWithOpenAI,
+} from "@/lib/openai-service";
 import type { OcrResult } from "@/lib/report-types";
+import { serverConfig } from "@/lib/server-config";
+
+const OCR_FALLBACK_MESSAGE =
+  "OCR could not confidently extract readable medical text from this file. Please upload a clearer JPG, PNG, or PDF scan, then try again.";
 
 function hasReadableText(text: string) {
   return /[A-Za-z0-9]/.test(text) && text.trim().length >= 8;
+}
+
+async function preprocessImageBufferForOcr(payload: {
+  buffer: Buffer;
+  filename: string;
+  mimeType: string;
+}) {
+  if (!payload.mimeType.startsWith("image/")) {
+    return {
+      buffer: payload.buffer,
+      filename: payload.filename,
+      mimeType: payload.mimeType,
+      preprocessingApplied: false,
+    };
+  }
+
+  try {
+    const metadata = await sharp(payload.buffer, { failOn: "none" }).metadata();
+    const baseName = path.basename(payload.filename, path.extname(payload.filename) || undefined) || "scan";
+    let pipeline = sharp(payload.buffer, { failOn: "none" }).rotate();
+
+    if (metadata.width && metadata.width < 1600) {
+      pipeline = pipeline.resize({
+        width: 1600,
+        fit: "inside",
+        withoutEnlargement: false,
+      });
+    } else if (metadata.width && metadata.width > 2200) {
+      pipeline = pipeline.resize({
+        width: 2200,
+        fit: "inside",
+        withoutEnlargement: true,
+      });
+    }
+
+    const buffer = await pipeline
+      .grayscale()
+      .normalize()
+      .sharpen({ sigma: 1.2, m1: 0.5, m2: 2 })
+      .linear(1.12, -10)
+      .png({ compressionLevel: 9 })
+      .toBuffer();
+
+    return {
+      buffer,
+      filename: `${baseName}-ocr.png`,
+      mimeType: "image/png",
+      preprocessingApplied: true,
+    };
+  } catch {
+    return {
+      buffer: payload.buffer,
+      filename: payload.filename,
+      mimeType: payload.mimeType,
+      preprocessingApplied: false,
+    };
+  }
 }
 
 async function runTesseractOnImage(buffer: Buffer, filename: string) {
@@ -36,9 +102,9 @@ async function runTesseractOnImage(buffer: Buffer, filename: string) {
 
 async function runTesseractOnPdf(buffer: Buffer) {
   const convert = fromBuffer(buffer, {
-    density: 150,
+    density: 170,
     format: "png",
-    width: 1600,
+    width: 1800,
     preserveAspectRatio: true,
   });
 
@@ -51,7 +117,12 @@ async function runTesseractOnPdf(buffer: Buffer) {
       continue;
     }
 
-    const text = await runTesseractOnImage(page.buffer, `pdf-page-${page.page}.png`);
+    const preprocessedPage = await preprocessImageBufferForOcr({
+      buffer: page.buffer,
+      filename: `pdf-page-${page.page}.png`,
+      mimeType: "image/png",
+    });
+    const text = await runTesseractOnImage(preprocessedPage.buffer, preprocessedPage.filename);
 
     if (hasReadableText(text)) {
       extractedPages.push(text);
@@ -61,62 +132,163 @@ async function runTesseractOnPdf(buffer: Buffer) {
   return normalizeText(extractedPages.join("\n\n"));
 }
 
+async function extractTextWithPreferredAiVision(payload: {
+  buffer: Buffer;
+  filename: string;
+  mimeType: string;
+}) {
+  const attempts: Array<{
+    engine: string;
+    run: () => Promise<string>;
+  }> = [];
+
+  if (serverConfig.geminiApiKey) {
+    attempts.push({
+      engine: payload.mimeType === "application/pdf" ? "gemini-document-ocr" : "gemini-vision-ocr",
+      run: () => extractTextWithGemini(payload),
+    });
+  }
+
+  attempts.push({
+    engine: payload.mimeType === "application/pdf" ? "openai-document-ocr" : "openai-vision-ocr",
+    run: () => extractTextWithOpenAI(payload),
+  });
+
+  const warnings: string[] = [];
+
+  for (const attempt of attempts) {
+    try {
+      const text = normalizeText(await attempt.run());
+
+      if (hasReadableText(text)) {
+        return {
+          text,
+          engine: attempt.engine,
+          warnings,
+        };
+      }
+
+      warnings.push(`${attempt.engine} returned text, but it was not readable enough to trust.`);
+    } catch (error) {
+      warnings.push(`${attempt.engine} failed: ${getErrorMessage(error, "OCR unavailable.")}`);
+    }
+  }
+
+  return {
+    text: "",
+    engine: "ai-vision-unavailable",
+    warnings,
+  };
+}
+
+async function finalizeOcrResult(payload: {
+  rawText: string;
+  engine: string;
+  confidence: OcrResult["confidence"];
+  warnings?: string[];
+}) {
+  const cleaned = await cleanAndStructureMedicalOcrText({
+    extractedText: payload.rawText,
+  });
+  const warnings = [...(payload.warnings || []), ...(cleaned.warnings || [])].filter(Boolean);
+
+  return {
+    text: cleaned.text || payload.rawText,
+    rawText: cleaned.rawText || payload.rawText,
+    structured: cleaned.structured,
+    warnings: warnings.length > 0 ? warnings : undefined,
+    engine: `${payload.engine}+${cleaned.engine}`,
+    confidence:
+      cleaned.engine === "heuristic-medical-cleanup" && payload.confidence === "high"
+        ? "medium"
+        : payload.confidence,
+  } satisfies OcrResult;
+}
+
+function buildFallbackOcrResult(warnings?: string[]) {
+  return {
+    text: OCR_FALLBACK_MESSAGE,
+    rawText: "",
+    engine: "fallback-message",
+    confidence: "low",
+    structured: {
+      medicines: [],
+      dosage: [],
+      instructions: [
+        "Upload a clearer scan with high contrast, readable medicine names, and visible dosage details.",
+      ],
+      possible_conditions: [],
+    },
+    warnings: warnings && warnings.length > 0 ? warnings : undefined,
+  } satisfies OcrResult;
+}
+
 export async function extractTextFromDocument(payload: {
   buffer: Buffer;
   filename: string;
   mimeType: string;
 }): Promise<OcrResult> {
   if (payload.mimeType === "application/pdf") {
+    const aiAttempt = await extractTextWithPreferredAiVision(payload);
+
+    if (hasReadableText(aiAttempt.text)) {
+      return finalizeOcrResult({
+        rawText: aiAttempt.text,
+        engine: aiAttempt.engine,
+        confidence: "high",
+        warnings: aiAttempt.warnings,
+      });
+    }
+
     try {
       const localPdfText = await runTesseractOnPdf(payload.buffer);
 
       if (hasReadableText(localPdfText)) {
-        return {
-          text: localPdfText,
+        return finalizeOcrResult({
+          rawText: localPdfText,
           engine: "tesseract-pdf",
           confidence: "medium",
-        };
+          warnings: aiAttempt.warnings,
+        });
       }
-    } catch {
-      // Fall back to hosted OCR when local PDF conversion is unavailable.
+    } catch (error) {
+      aiAttempt.warnings.push(
+        `tesseract-pdf failed: ${getErrorMessage(error, "Local PDF OCR unavailable.")}`
+      );
     }
 
-    const pdfText = await extractTextWithOpenAI(payload);
+    return buildFallbackOcrResult(aiAttempt.warnings);
+  }
 
-    if (!hasReadableText(pdfText)) {
-      throw new ApiError("No readable text could be extracted from the PDF.", 422);
-    }
+  const preprocessed = await preprocessImageBufferForOcr(payload);
+  const preprocessingWarnings = preprocessed.preprocessingApplied
+    ? ["Applied grayscale, sharpening, and contrast normalization before OCR."]
+    : [];
+  const aiAttempt = await extractTextWithPreferredAiVision(preprocessed);
 
-    return {
-      text: pdfText,
-      engine: "openai-document-ocr",
+  if (hasReadableText(aiAttempt.text)) {
+    return finalizeOcrResult({
+      rawText: aiAttempt.text,
+      engine: aiAttempt.engine,
       confidence: "high",
-    };
+      warnings: [...preprocessingWarnings, ...aiAttempt.warnings],
+    });
   }
 
   try {
-    const text = await runTesseractOnImage(payload.buffer, payload.filename);
+    const text = await runTesseractOnImage(preprocessed.buffer, preprocessed.filename);
 
-    if (hasReadableText(text) && text.length >= 40) {
-      return {
-        text,
+    if (hasReadableText(text)) {
+      return finalizeOcrResult({
+        rawText: text,
         engine: "tesseract",
         confidence: "medium",
-      };
+        warnings: [...preprocessingWarnings, ...aiAttempt.warnings],
+      });
     }
-  } catch {
-    // Fall through to OpenAI OCR for a second attempt.
+  } catch (error) {
+    aiAttempt.warnings.push(`tesseract failed: ${getErrorMessage(error, "Local OCR unavailable.")}`);
   }
 
-  const fallbackText = await extractTextWithOpenAI(payload);
-
-  if (!hasReadableText(fallbackText)) {
-    throw new ApiError("No readable text could be extracted from the uploaded image.", 422);
-  }
-
-  return {
-    text: fallbackText,
-    engine: "openai-vision-ocr",
-    confidence: "high",
-  };
+  return buildFallbackOcrResult([...preprocessingWarnings, ...aiAttempt.warnings]);
 }

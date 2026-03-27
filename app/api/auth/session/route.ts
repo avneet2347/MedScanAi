@@ -1,7 +1,11 @@
 import { NextResponse } from "next/server";
 import { setAuthCookies } from "@/lib/auth-cookies";
 import { getErrorMessage, getErrorStatus, jsonError } from "@/lib/api-utils";
-import { ensureUserProfile } from "@/lib/reports";
+import {
+  buildUserProfileRecord,
+  ensureUserProfile,
+  isMissingProfilesTableError,
+} from "@/lib/reports";
 import { requireAuthenticatedUser } from "@/lib/supabase-server";
 
 export const runtime = "nodejs";
@@ -9,16 +13,20 @@ export const runtime = "nodejs";
 export async function GET(request: Request) {
   try {
     const { user, dataClient, refreshedSession } = await requireAuthenticatedUser(request);
-    await ensureUserProfile(dataClient, user);
-    const { data: profile } = await dataClient
+    const fallbackProfile = await ensureUserProfile(dataClient, user);
+    const { data: profile, error: profileError } = await dataClient
       .from("profiles")
-      .select("*")
+      .select("id, email, full_name")
       .eq("id", user.id)
       .maybeSingle();
 
+    if (profileError && !isMissingProfilesTableError(profileError)) {
+      throw new Error(profileError.message);
+    }
+
     const response = NextResponse.json({
       user,
-      profile,
+      profile: profile ?? fallbackProfile ?? buildUserProfileRecord(user),
     });
 
     if (refreshedSession) {

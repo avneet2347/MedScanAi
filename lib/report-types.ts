@@ -8,6 +8,7 @@ export type Json =
 
 export type RiskLevel = "low" | "moderate" | "high" | "critical";
 export type OutputLanguage = "en" | "hi" | "hinglish";
+export type ConfidenceLevel = "low" | "medium" | "high";
 export type TestStatus =
   | "normal"
   | "high"
@@ -144,6 +145,69 @@ export interface TrendInsight {
   status: TestStatus;
 }
 
+export interface MetricSeries {
+  metricKey: string;
+  testName: string;
+  unit: string;
+  points: TrendDataPoint[];
+}
+
+export interface ComparisonMetric {
+  metricKey: string;
+  testName: string;
+  unit: string;
+  values: TrendDataPoint[];
+  direction: "up" | "down" | "stable" | "mixed";
+  delta: number | null;
+  deltaPercent: number | null;
+  summary: string;
+}
+
+export interface ReportComparisonSummary {
+  id: string;
+  title: string;
+  createdAt: string;
+  reportStatus: string;
+  overallRisk: RiskLevel | "unknown";
+}
+
+export interface ReportComparisonResult {
+  reports: ReportComparisonSummary[];
+  metrics: ComparisonMetric[];
+}
+
+export interface ConfidenceScore {
+  level: ConfidenceLevel;
+  score: number;
+  reasons: string[];
+}
+
+export interface ReportConfidenceSummary {
+  reportId: string;
+  ocr: ConfidenceScore;
+  analysis: ConfidenceScore;
+  overall: ConfidenceScore;
+}
+
+export interface ReminderTimeSlot {
+  time: string;
+  label?: string | null;
+}
+
+export interface MedicineReminderRecord {
+  id: string;
+  user_id: string;
+  report_id: string | null;
+  medicine_name: string;
+  dosage: string | null;
+  schedule: string;
+  instructions: string | null;
+  reminder_times: ReminderTimeSlot[];
+  active: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface MedicalAnalysis {
   documentType: string;
   overview: string;
@@ -172,6 +236,24 @@ export interface HealthAlert {
   recommendation: string;
 }
 
+export type StoredHealthAlertSeverity = "low" | "medium" | "high" | "critical";
+
+export interface StoredHealthAlertRecord {
+  id: string;
+  report_id: string;
+  alert_type: StoredHealthAlertSeverity;
+  message: string;
+  created_at: string;
+}
+
+export interface StoredAiConfidenceRecord {
+  id: string;
+  report_id: string;
+  ocr_confidence: number;
+  ai_confidence: number;
+  created_at: string;
+}
+
 export interface HealthInsights {
   overallRisk: RiskLevel;
   summary: string;
@@ -195,6 +277,14 @@ export interface OcrResult {
   text: string;
   engine: string;
   confidence: "low" | "medium" | "high";
+  rawText?: string;
+  warnings?: string[];
+  structured?: {
+    medicines: string[];
+    dosage: string[];
+    instructions: string[];
+    possible_conditions: string[];
+  };
 }
 
 export interface ReportRecord {
@@ -228,4 +318,5 @@ export interface ChatMessageRecord {
 
 export interface ReportDetail extends ReportRecord {
   chat_messages: ChatMessageRecord[];
+  health_alerts: StoredHealthAlertRecord[];
 }

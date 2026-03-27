@@ -1,9 +1,13 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { ApiError } from "@/lib/api-utils";
+import { syncReportAiConfidenceSafely } from "@/lib/ai-confidence";
 import { extractTextFromDocument } from "@/lib/ocr-service";
+import { syncReportHealthAlertsSafely } from "@/lib/health-alerts";
+import { generateFallbackMedicalAnalysis } from "@/lib/fallback-analysis";
 import { generateHealthInsights } from "@/lib/insights";
 import { createAuthenticityProof } from "@/lib/report-authenticity";
 import { generateMedicalAnalysis } from "@/lib/openai-service";
+import { getMissingStorageBucketMessage, isStorageBucketNotFoundError } from "@/lib/report-storage";
 import {
   getReportById,
   saveAnalysis,
@@ -11,6 +15,7 @@ import {
   saveOcrResult,
   updateReportState,
 } from "@/lib/reports";
+import { syncStoredMetricsForReportsSafely } from "@/lib/trends";
 import type {
   HealthInsights,
   MedicalAnalysis,
@@ -28,6 +33,10 @@ export async function downloadReportFile(
     .download(report.storage_path);
 
   if (error || !data) {
+    if (isStorageBucketNotFoundError(error)) {
+      throw new ApiError(getMissingStorageBucketMessage(), 503);
+    }
+
     throw new Error(error?.message || "Unable to download report from storage.");
   }
 
@@ -108,6 +117,19 @@ export async function ensureReportAnalysis(
     throw new ApiError("No readable OCR text is available for analysis.", 422);
   }
 
+  if (ocrState.ocr.engine.startsWith("fallback-message")) {
+    const fallbackAnalysis = generateFallbackMedicalAnalysis(
+      ocrState.ocr.text,
+      language || report.insights_json?.preferredLanguage || "en"
+    );
+    const updatedReport = await saveAnalysis(supabase, reportId, fallbackAnalysis);
+
+    return {
+      report: updatedReport,
+      analysis: fallbackAnalysis,
+    };
+  }
+
   try {
     const analysis = await generateMedicalAnalysis({
       extractedText: ocrState.ocr.text,
@@ -152,6 +174,19 @@ export async function ensureReportInsights(
     report.insights_json.doctorRecommendations &&
     report.insights_json.authenticity
   ) {
+    await syncReportAiConfidenceSafely(
+      supabase,
+      report,
+      report.insights_json.preferredLanguage || language || "en"
+    );
+    await syncReportHealthAlertsSafely(
+      supabase,
+      reportId,
+      report.insights_json,
+      report.insights_json.preferredLanguage || language || "en"
+    );
+    await syncStoredMetricsForReportsSafely(supabase, [report]);
+
     return {
       report,
       insights: report.insights_json,
@@ -181,6 +216,9 @@ export async function ensureReportInsights(
       authenticity,
     });
     const updatedReport = await saveInsights(supabase, reportId, insights);
+    await syncReportAiConfidenceSafely(supabase, updatedReport, insightLanguage);
+    await syncReportHealthAlertsSafely(supabase, reportId, insights, insightLanguage);
+    await syncStoredMetricsForReportsSafely(supabase, [updatedReport]);
 
     return {
       report: updatedReport,
