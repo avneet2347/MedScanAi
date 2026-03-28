@@ -5,7 +5,11 @@ import {
   createMedicineReminder,
   listMedicineRemindersSafely,
 } from "@/lib/reminders";
-import type { ReminderTimeSlot } from "@/lib/report-types";
+import {
+  REMINDER_ALARM_TONES,
+  type ReminderAlarmTone,
+  type ReminderTimeSlot,
+} from "@/lib/report-types";
 import { requireAuthenticatedUser } from "@/lib/supabase-server";
 
 export const runtime = "nodejs";
@@ -50,6 +54,10 @@ function isValidTimeSlot(time: string) {
   return /^([01]\d|2[0-3]):([0-5]\d)$/.test(time);
 }
 
+function normalizeReminderTone(value: unknown): ReminderAlarmTone {
+  return REMINDER_ALARM_TONES.find((tone) => tone === value) || "default";
+}
+
 export async function GET(request: Request) {
   try {
     const reportId = new URL(request.url).searchParams.get("reportId")?.trim();
@@ -79,6 +87,7 @@ export async function POST(request: Request) {
           schedule?: string;
           instructions?: string | null;
           reminderTimes?: unknown;
+          alarmTone?: unknown;
           active?: boolean;
         }
       | null;
@@ -100,11 +109,12 @@ export async function POST(request: Request) {
     }
 
     if (!reminderTimes.every((slot) => isValidTimeSlot(slot.time))) {
-      return jsonError("Reminder times must use HH:mm format.");
+      return jsonError("Reminder times must be valid.");
     }
 
     const { user, dataClient } = await requireAuthenticatedUser(request);
     await ensureUserProfile(dataClient, user);
+    const alarmTone = normalizeReminderTone(body?.alarmTone);
 
     const reminder = await createMedicineReminder(dataClient, {
       user_id: user.id,
@@ -114,6 +124,7 @@ export async function POST(request: Request) {
       schedule,
       instructions: body?.instructions?.trim() || null,
       reminder_times: reminderTimes,
+      alarm_tone: alarmTone,
       active: body?.active ?? true,
     });
 

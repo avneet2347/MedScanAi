@@ -73,6 +73,7 @@ create table if not exists public.medicine_reminders (
   schedule text not null,
   instructions text,
   reminder_times jsonb not null default '[]'::jsonb,
+  alarm_tone text not null default 'default',
   active boolean not null default true,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
@@ -85,6 +86,7 @@ alter table if exists public.medicine_reminders
   add column if not exists schedule text,
   add column if not exists instructions text,
   add column if not exists reminder_times jsonb not null default '[]'::jsonb,
+  add column if not exists alarm_tone text not null default 'default',
   add column if not exists active boolean not null default true,
   add column if not exists created_at timestamptz not null default now(),
   add column if not exists updated_at timestamptz not null default now();

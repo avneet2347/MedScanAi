@@ -1172,7 +1172,7 @@ export default function ResultViewer() {
           <div className={styles.chatList}>
             {currentResult.chatMessages.length === 0 ? (
               <div className={styles.emptyState}>
-                Ask about risks, medicines, abnormal values, or historical trends.
+                Ask about risks, medicines, abnormal values, historical trends, or symptoms like fever and headache.
               </div>
             ) : (
               currentResult.chatMessages.slice(-6).map((message, index) => (
@@ -1196,7 +1196,7 @@ export default function ResultViewer() {
             <input
               value={chatInput}
               onChange={(event) => setChatInput(event.target.value)}
-              placeholder="Ask about report context or trends"
+              placeholder="Ask about report context, trends, or symptoms like fever or cough"
               className={styles.textInput}
             />
             <button

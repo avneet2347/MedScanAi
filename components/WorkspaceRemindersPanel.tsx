@@ -1,11 +1,13 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type {
-  MedicineEntry,
-  MedicineReminderRecord,
-  ReminderTimeSlot,
-  ReportDetail,
+import {
+  REMINDER_ALARM_TONES,
+  type ReminderAlarmTone,
+  type MedicineEntry,
+  type MedicineReminderRecord,
+  type ReminderTimeSlot,
+  type ReportDetail,
 } from "@/lib/report-types";
 
 type Props = {
@@ -21,13 +23,46 @@ type ReminderSuggestion = {
 };
 
 type ReminderNotificationState = NotificationPermission | "unsupported";
+type ReminderScheduleResolution = {
+  error: string | null;
+  nextTriggerAt: Date | null;
+};
+type ParsedReminderTimeInput = {
+  reminderTimes: ReminderTimeSlot[];
+  invalidEntries: string[];
+};
 
-const ALARM_SOUND_PATH = "/alarm.mp3";
+const DEFAULT_REMINDER_TONE: ReminderAlarmTone = "default";
+const REMINDER_TONE_LABELS: Record<ReminderAlarmTone, string> = {
+  default: "Default",
+  soft: "Soft",
+  beep: "Beep",
+  alert: "Alert",
+};
+const REMINDER_TONE_PATHS: Record<ReminderAlarmTone, string> = {
+  default: "/tones/default.mp3",
+  soft: "/tones/soft.mp3",
+  beep: "/tones/beep.mp3",
+  alert: "/tones/alert.mp3",
+};
+const REMINDER_TIME_HINT = "Use reminder times like 8:00 AM or 8:00 PM.";
 const REMINDER_CHECK_INTERVAL_MS = 1000;
 const REMINDER_LOOKBACK_MS = 60_000;
 
-function createAlarmAudioElement() {
-  const audio = new Audio(ALARM_SOUND_PATH);
+function normalizeReminderTone(value: unknown): ReminderAlarmTone {
+  return REMINDER_ALARM_TONES.find((tone) => tone === value) || DEFAULT_REMINDER_TONE;
+}
+
+function getReminderToneLabel(tone: ReminderAlarmTone) {
+  return REMINDER_TONE_LABELS[normalizeReminderTone(tone)];
+}
+
+function getReminderTonePath(tone: ReminderAlarmTone) {
+  return REMINDER_TONE_PATHS[normalizeReminderTone(tone)];
+}
+
+function createAlarmAudioElement(tone: ReminderAlarmTone = DEFAULT_REMINDER_TONE) {
+  const audio = new Audio(getReminderTonePath(tone));
   audio.preload = "auto";
   audio.loop = false;
   audio.load();
@@ -44,8 +79,13 @@ function buildLocalReminderDateKey(value: Date) {
   )}`;
 }
 
-function parseReminderClockTime(time: string) {
-  const match = time.match(/^([01]\d|2[0-3]):([0-5]\d)$/);
+function isValidReminderDate(value: Date | null | undefined): value is Date {
+  return value instanceof Date && !Number.isNaN(value.getTime());
+}
+
+function parseReminderClockTime(time: string | null | undefined) {
+  const normalizedTime = typeof time === "string" ? time.trim() : "";
+  const match = normalizedTime.match(/^([01]\d|2[0-3]):([0-5]\d)$/);
 
   if (!match) {
     return null;
@@ -57,22 +97,74 @@ function parseReminderClockTime(time: string) {
   };
 }
 
-function buildReminderDateTime(reference: Date, time: string) {
+function buildLocalReminderDateTimeValue(reference: Date, time: string, dayOffset = 0) {
+  if (!isValidReminderDate(reference)) {
+    return null;
+  }
+
   const parsed = parseReminderClockTime(time);
 
   if (!parsed) {
     return null;
   }
 
-  return new Date(
-    reference.getFullYear(),
-    reference.getMonth(),
-    reference.getDate(),
-    parsed.hours,
-    parsed.minutes,
-    0,
-    0
-  );
+  const targetDate = new Date(reference.getTime());
+  targetDate.setHours(0, 0, 0, 0);
+  targetDate.setDate(targetDate.getDate() + dayOffset);
+
+  if (!isValidReminderDate(targetDate)) {
+    return null;
+  }
+
+  return `${buildLocalReminderDateKey(targetDate)}T${padTimeSegment(parsed.hours)}:${padTimeSegment(
+    parsed.minutes
+  )}:00`;
+}
+
+function buildReminderDateTime(reference: Date, time: string, dayOffset = 0) {
+  const reminderDateTimeValue = buildLocalReminderDateTimeValue(reference, time, dayOffset);
+
+  if (!reminderDateTimeValue) {
+    return null;
+  }
+
+  const scheduledAt = new Date(reminderDateTimeValue);
+  return isValidReminderDate(scheduledAt) ? scheduledAt : null;
+}
+
+function parseReminderInputClockTime(time: string | null | undefined) {
+  const normalizedTime =
+    typeof time === "string" ? time.trim().replace(/\s+/g, " ").toUpperCase() : "";
+  const match = normalizedTime.match(/^(0?[1-9]|1[0-2]):([0-5]\d)\s?(AM|PM)$/);
+
+  if (!match) {
+    return null;
+  }
+
+  let hours = Number(match[1]) % 12;
+  const minutes = Number(match[2]);
+
+  if (match[3] === "PM") {
+    hours += 12;
+  }
+
+  return {
+    hours,
+    minutes,
+  };
+}
+
+function formatStoredReminderClockTime(time: string | null | undefined) {
+  const parsed = parseReminderClockTime(time);
+
+  if (!parsed) {
+    return typeof time === "string" ? time : "";
+  }
+
+  const period = parsed.hours >= 12 ? "PM" : "AM";
+  const displayHours = parsed.hours % 12 || 12;
+
+  return `${displayHours}:${padTimeSegment(parsed.minutes)} ${period}`;
 }
 
 function formatReminderTriggerTime(value: Date) {
@@ -83,43 +175,74 @@ function formatReminderTriggerTime(value: Date) {
   });
 }
 
-function getReminderScheduleDateKey(reminder: MedicineReminderRecord) {
-  const source = reminder.updated_at || reminder.created_at;
-
-  if (!source) {
-    return null;
-  }
-
-  const scheduledOn = new Date(source);
-
-  if (Number.isNaN(scheduledOn.getTime())) {
-    return null;
-  }
-
-  return buildLocalReminderDateKey(scheduledOn);
+function isSameLocalReminderDate(left: Date, right: Date) {
+  return buildLocalReminderDateKey(left) === buildLocalReminderDateKey(right);
 }
 
-function resolveTodayReminderSchedule(reference: Date, reminderTimes: ReminderTimeSlot[]) {
-  const scheduledTimes = reminderTimes
-    .map((slot) => ({
-      slot,
-      scheduledAt: buildReminderDateTime(reference, slot.time),
-    }))
-    .filter((item): item is { slot: ReminderTimeSlot; scheduledAt: Date } => Boolean(item.scheduledAt));
+function formatReminderTriggerLabel(value: Date, reference: Date) {
+  const timeLabel = formatReminderTriggerTime(value);
 
-  if (scheduledTimes.length !== reminderTimes.length) {
+  if (isSameLocalReminderDate(value, reference)) {
+    return `today at ${timeLabel}`;
+  }
+
+  const tomorrow = new Date(reference.getTime());
+  tomorrow.setDate(tomorrow.getDate() + 1);
+
+  if (isSameLocalReminderDate(value, tomorrow)) {
+    return `tomorrow at ${timeLabel}`;
+  }
+
+  return `on ${value.toLocaleDateString("en-IN", {
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+  })} at ${timeLabel}`;
+}
+
+function hasInvalidReminderTimeSlots(reminderTimes: ReminderTimeSlot[] | null | undefined) {
+  return !Array.isArray(reminderTimes) || reminderTimes.some((slot) => !parseReminderClockTime(slot?.time));
+}
+
+function resolveNextReminderSchedule(
+  reference: Date,
+  reminderTimes: ReminderTimeSlot[]
+): ReminderScheduleResolution {
+  if (!isValidReminderDate(reference)) {
     return {
-      error: "Use reminder times in HH:mm format, for example 08:00 or 20:00.",
-      nextTriggerAt: null as Date | null,
+      error: "Unable to read the current time. Please try again.",
+      nextTriggerAt: null,
     };
   }
 
-  const pastSlot = scheduledTimes.find((item) => item.scheduledAt.getTime() <= reference.getTime());
+  const scheduledTimes = reminderTimes
+    .map((slot) => {
+      const scheduledAtToday = buildReminderDateTime(reference, slot.time);
 
-  if (pastSlot) {
+      if (!scheduledAtToday) {
+        return null;
+      }
+
+      const scheduledAt =
+        scheduledAtToday.getTime() >= reference.getTime()
+          ? scheduledAtToday
+          : buildReminderDateTime(reference, slot.time, 1);
+
+      if (!scheduledAt) {
+        return null;
+      }
+
+      return {
+        slot,
+        scheduledAt,
+      };
+    })
+    .filter((item): item is { slot: ReminderTimeSlot; scheduledAt: Date } => Boolean(item?.scheduledAt));
+
+  if (scheduledTimes.length !== reminderTimes.length) {
     return {
-      error: `Choose a reminder time later today. ${pastSlot.slot.time} has already passed.`,
-      nextTriggerAt: null as Date | null,
+      error: REMINDER_TIME_HINT,
+      nextTriggerAt: null,
     };
   }
 
@@ -132,22 +255,39 @@ function resolveTodayReminderSchedule(reference: Date, reminderTimes: ReminderTi
 }
 
 function isValidTimeSlot(time: string) {
-  return /^([01]\d|2[0-3]):([0-5]\d)$/.test(time);
+  return Boolean(parseReminderClockTime(time));
 }
 
-function normalizeTimeSlots(input: string) {
+function parseReminderTimeInput(input: string): ParsedReminderTimeInput {
   return input
     .split(",")
     .map((item) => item.trim())
     .filter(Boolean)
-    .map((time) => ({
-      time,
-      label: null,
-    }));
+    .reduce<ParsedReminderTimeInput>(
+      (result, entry) => {
+        const parsed = parseReminderInputClockTime(entry);
+
+        if (!parsed) {
+          result.invalidEntries.push(entry);
+          return result;
+        }
+
+        result.reminderTimes.push({
+          time: `${padTimeSegment(parsed.hours)}:${padTimeSegment(parsed.minutes)}`,
+          label: null,
+        });
+
+        return result;
+      },
+      {
+        reminderTimes: [],
+        invalidEntries: [],
+      }
+    );
 }
 
 function formatTimeSlots(slots: ReminderTimeSlot[]) {
-  return slots.map((slot) => slot.time).join(", ");
+  return slots.map((slot) => formatStoredReminderClockTime(slot.time)).join(", ");
 }
 
 function guessReminderTimes(schedule: string): ReminderTimeSlot[] {
@@ -180,7 +320,14 @@ function guessReminderTimes(schedule: string): ReminderTimeSlot[] {
 }
 
 function formatDate(value: string) {
-  return new Date(value).toLocaleString("en-IN");
+  return new Date(value).toLocaleString("en-IN", {
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+    hour12: true,
+  });
 }
 
 function suggestionKey(item: ReminderSuggestion) {
@@ -207,18 +354,25 @@ export default function WorkspaceRemindersPanel({
   const [saving, setSaving] = useState(false);
   const [reminders, setReminders] = useState<MedicineReminderRecord[]>([]);
   const [notice, setNotice] = useState<string | null>(null);
+  const [alarmActive, setAlarmActive] = useState(false);
   const [draftTimes, setDraftTimes] = useState<Record<string, string>>({});
+  const [draftTones, setDraftTones] = useState<Record<string, ReminderAlarmTone>>({});
   const [editingReminderId, setEditingReminderId] = useState<string | null>(null);
   const [editSchedule, setEditSchedule] = useState("");
   const [editTimes, setEditTimes] = useState("");
   const [editInstructions, setEditInstructions] = useState("");
+  const [editTone, setEditTone] = useState<ReminderAlarmTone>(DEFAULT_REMINDER_TONE);
   const [notificationPermission, setNotificationPermission] =
     useState<ReminderNotificationState>("default");
   const triggeredReminderKeysRef = useRef<Set<string>>(new Set());
   const lastReminderCheckAtRef = useRef<number>(0);
   const alarmAudioRef = useRef<HTMLAudioElement | null>(null);
+  const playingAlarmAudioRef = useRef<HTMLAudioElement | null>(null);
+  const alarmToneRef = useRef<ReminderAlarmTone>(DEFAULT_REMINDER_TONE);
   const alarmAudioUnlockedRef = useRef(false);
+  const alarmPrimingRef = useRef(false);
   const pendingAlarmPlaybackRef = useRef(false);
+  const pendingAlarmToneRef = useRef<ReminderAlarmTone>(DEFAULT_REMINDER_TONE);
   const audioBlockedNoticeShownRef = useRef(false);
 
   const showAlarmBlockedNotice = useCallback((message: string) => {
@@ -243,6 +397,58 @@ export default function WorkspaceRemindersPanel({
     setNotificationPermission(Notification.permission);
   }, []);
 
+  const bindAlarmAudioLifecycle = useCallback((audio: HTMLAudioElement) => {
+    audio.onplay = () => {
+      if (alarmPrimingRef.current) {
+        return;
+      }
+
+      playingAlarmAudioRef.current = audio;
+      setAlarmActive(true);
+    };
+
+    audio.onpause = () => {
+      if (playingAlarmAudioRef.current === audio) {
+        playingAlarmAudioRef.current = null;
+      }
+
+      if (!alarmPrimingRef.current) {
+        setAlarmActive(false);
+      }
+    };
+
+    audio.onended = () => {
+      if (playingAlarmAudioRef.current === audio) {
+        playingAlarmAudioRef.current = null;
+      }
+
+      setAlarmActive(false);
+    };
+  }, []);
+
+  const ensureAlarmAudioElement = useCallback((tone: ReminderAlarmTone) => {
+    const normalizedTone = normalizeReminderTone(tone);
+    let audio = alarmAudioRef.current;
+
+    if (!audio) {
+      audio = createAlarmAudioElement(normalizedTone);
+      bindAlarmAudioLifecycle(audio);
+      alarmAudioRef.current = audio;
+      alarmToneRef.current = normalizedTone;
+      return audio;
+    }
+
+    if (alarmToneRef.current !== normalizedTone) {
+      audio.pause();
+      audio.currentTime = 0;
+      audio.src = getReminderTonePath(normalizedTone);
+      audio.load();
+      alarmToneRef.current = normalizedTone;
+    }
+
+    return audio;
+  }, [bindAlarmAudioLifecycle]);
+
   const reminderSuggestions = useMemo(
     () =>
       ((selectedReport?.analysis_json?.medicines || []) as MedicineEntry[]).map(
@@ -263,7 +469,12 @@ export default function WorkspaceRemindersPanel({
       const payload = await authorizedFetchJson(
         `/api/reminders?reportId=${encodeURIComponent(selectedReport.id)}`
       );
-      setReminders((payload.reminders as MedicineReminderRecord[] | undefined) || []);
+      const nextReminders = (payload.reminders as MedicineReminderRecord[] | undefined) || [];
+      setReminders(nextReminders);
+
+      if (nextReminders.some((reminder) => hasInvalidReminderTimeSlots(reminder.reminder_times))) {
+        setNotice("Some saved reminders have invalid times. Edit them to use times like 8:00 AM or 8:00 PM.");
+      }
     } catch (error) {
       setNotice(error instanceof Error ? error.message : "Unable to load reminders.");
     } finally {
@@ -280,7 +491,10 @@ export default function WorkspaceRemindersPanel({
       return;
     }
 
-    alarmAudioRef.current = createAlarmAudioElement();
+    const audio = createAlarmAudioElement(DEFAULT_REMINDER_TONE);
+    alarmAudioRef.current = audio;
+    bindAlarmAudioLifecycle(audio);
+    alarmToneRef.current = DEFAULT_REMINDER_TONE;
 
     if (!("Notification" in window)) {
       setNotificationPermission("unsupported");
@@ -288,15 +502,28 @@ export default function WorkspaceRemindersPanel({
     }
 
     syncNotificationPermission();
-  }, [syncNotificationPermission]);
+    return () => {
+      const audio = alarmAudioRef.current;
 
-  const playAlarmSound = useCallback(async () => {
+      if (audio) {
+        audio.pause();
+        audio.currentTime = 0;
+      }
+
+      playingAlarmAudioRef.current = null;
+    };
+  }, [bindAlarmAudioLifecycle, syncNotificationPermission]);
+
+  const playAlarmSound = useCallback(async (tone: ReminderAlarmTone = DEFAULT_REMINDER_TONE) => {
     if (typeof window === "undefined") {
       return false;
     }
 
+    const normalizedTone = normalizeReminderTone(tone);
+
     if (document.hidden) {
       pendingAlarmPlaybackRef.current = true;
+      pendingAlarmToneRef.current = normalizedTone;
       return false;
     }
 
@@ -308,77 +535,95 @@ export default function WorkspaceRemindersPanel({
       await audio.play();
     };
 
-    let audio = alarmAudioRef.current;
-
-    if (!audio) {
-      audio = createAlarmAudioElement();
-      alarmAudioRef.current = audio;
-    }
+    let audio = ensureAlarmAudioElement(normalizedTone);
 
     try {
       await playAudio(audio);
       alarmAudioUnlockedRef.current = true;
       pendingAlarmPlaybackRef.current = false;
+      pendingAlarmToneRef.current = normalizedTone;
       audioBlockedNoticeShownRef.current = false;
       return true;
     } catch (error) {
       console.warn("Reminder alarm playback failed on the primary audio element.", error);
-      const fallbackAudio = createAlarmAudioElement();
+      const fallbackAudio = createAlarmAudioElement(normalizedTone);
+      bindAlarmAudioLifecycle(fallbackAudio);
       alarmAudioRef.current = fallbackAudio;
+      alarmToneRef.current = normalizedTone;
 
       try {
         await playAudio(fallbackAudio);
         alarmAudioUnlockedRef.current = true;
         pendingAlarmPlaybackRef.current = false;
+        pendingAlarmToneRef.current = normalizedTone;
         audioBlockedNoticeShownRef.current = false;
         return true;
       } catch (fallbackError) {
         console.warn("Reminder alarm playback failed on the fallback audio element.", fallbackError);
         pendingAlarmPlaybackRef.current = true;
+        pendingAlarmToneRef.current = normalizedTone;
         return false;
       }
     }
-  }, []);
+  }, [bindAlarmAudioLifecycle, ensureAlarmAudioElement]);
 
-  const primeAlarmAudio = useCallback(async () => {
-    if (typeof window === "undefined") {
-      return false;
-    }
+  const primeAlarmAudio = useCallback(
+    async (tone: ReminderAlarmTone = alarmToneRef.current) => {
+      if (typeof window === "undefined") {
+        return false;
+      }
 
-    let audio = alarmAudioRef.current;
+      const normalizedTone = normalizeReminderTone(tone);
+      let audio = ensureAlarmAudioElement(normalizedTone);
+
+      if (!alarmAudioUnlockedRef.current) {
+        try {
+          alarmPrimingRef.current = true;
+          audio.muted = true;
+          audio.volume = 0;
+          audio.currentTime = 0;
+          await audio.play();
+          audio.pause();
+          audio.currentTime = 0;
+          audio.muted = false;
+          audio.volume = 1;
+          playingAlarmAudioRef.current = null;
+          setAlarmActive(false);
+          alarmAudioUnlockedRef.current = true;
+        } catch (error) {
+          console.warn("Reminder alarm priming was blocked before the reminder fired.", error);
+          audio.muted = false;
+          audio.volume = 1;
+          return false;
+        } finally {
+          alarmPrimingRef.current = false;
+        }
+      }
+
+      if (pendingAlarmPlaybackRef.current) {
+        pendingAlarmPlaybackRef.current = false;
+        audioBlockedNoticeShownRef.current = false;
+        return playAlarmSound(pendingAlarmToneRef.current);
+      }
+
+      return true;
+    },
+    [ensureAlarmAudioElement, playAlarmSound]
+  );
+
+  const stopAlarmSound = useCallback(() => {
+    const audio = playingAlarmAudioRef.current || alarmAudioRef.current;
 
     if (!audio) {
-      audio = createAlarmAudioElement();
-      alarmAudioRef.current = audio;
+      return;
     }
 
-    if (!alarmAudioUnlockedRef.current) {
-      try {
-        audio.muted = true;
-        audio.volume = 0;
-        audio.currentTime = 0;
-        await audio.play();
-        audio.pause();
-        audio.currentTime = 0;
-        audio.muted = false;
-        audio.volume = 1;
-        alarmAudioUnlockedRef.current = true;
-      } catch (error) {
-        console.warn("Reminder alarm priming was blocked before the reminder fired.", error);
-        audio.muted = false;
-        audio.volume = 1;
-        return false;
-      }
-    }
-
-    if (pendingAlarmPlaybackRef.current) {
-      pendingAlarmPlaybackRef.current = false;
-      audioBlockedNoticeShownRef.current = false;
-      return playAlarmSound();
-    }
-
-    return true;
-  }, [playAlarmSound]);
+    pendingAlarmPlaybackRef.current = false;
+    audio.pause();
+    audio.currentTime = 0;
+    playingAlarmAudioRef.current = null;
+    setAlarmActive(false);
+  }, []);
 
   useEffect(() => {
     if (typeof window === "undefined") {
@@ -482,7 +727,7 @@ export default function WorkspaceRemindersPanel({
 
     const checkReminders = () => {
       if (!document.hidden && pendingAlarmPlaybackRef.current) {
-        void playAlarmSound().then((didPlay) => {
+        void playAlarmSound(pendingAlarmToneRef.current).then((didPlay) => {
           if (!didPlay) {
             showAlarmBlockedNotice(
               "Reminder sound is blocked in this browser. Click once in this tab to allow alarm audio."
@@ -510,12 +755,6 @@ export default function WorkspaceRemindersPanel({
           return;
         }
 
-        const reminderDateKey = getReminderScheduleDateKey(reminder);
-
-        if (reminderDateKey && reminderDateKey !== currentDateKey) {
-          return;
-        }
-
         reminder.reminder_times?.forEach((slot) => {
           const scheduledAt = buildReminderDateTime(now, slot.time);
 
@@ -523,6 +762,8 @@ export default function WorkspaceRemindersPanel({
             return;
           }
 
+          const reminderTone = normalizeReminderTone(reminder.alarm_tone);
+          const reminderTimeLabel = formatReminderTriggerTime(scheduledAt);
           const scheduledTimestamp = scheduledAt.getTime();
           const reminderKey = `${currentDateKey}:${reminder.id}:${slot.time}`;
 
@@ -536,21 +777,21 @@ export default function WorkspaceRemindersPanel({
 
           triggeredReminderKeysRef.current.add(reminderKey);
           setNotice(
-            `Reminder: ${reminder.medicine_name} is scheduled for ${slot.time}. ${
+            `Reminder: ${reminder.medicine_name} is scheduled for ${reminderTimeLabel}. ${
               reminder.instructions || "Please take it as prescribed."
             }`
           );
 
           void showReminderNotification(`Time for ${reminder.medicine_name}`, {
-              body: reminder.instructions || `Scheduled for ${slot.time}`,
+              body: reminder.instructions || `Scheduled for ${reminderTimeLabel}`,
               tag: reminderKey,
               requireInteraction: true,
             });
 
-          void playAlarmSound().then((didPlay) => {
+          void playAlarmSound(reminderTone).then((didPlay) => {
             if (!didPlay) {
               showAlarmBlockedNotice(
-                `Reminder: ${reminder.medicine_name} is scheduled for ${slot.time}. Click once in this tab to enable the alarm sound in this browser.`
+                `Reminder: ${reminder.medicine_name} is scheduled for ${reminderTimeLabel}. Click once in this tab to enable the alarm sound in this browser.`
               );
             }
           });
@@ -579,10 +820,17 @@ export default function WorkspaceRemindersPanel({
         ])
       )
     );
+    setDraftTones(
+      reminderSuggestions.reduce<Record<string, ReminderAlarmTone>>((result, item) => {
+        result[suggestionKey(item)] = DEFAULT_REMINDER_TONE;
+        return result;
+      }, {})
+    );
     setEditingReminderId(null);
     setEditSchedule("");
     setEditTimes("");
     setEditInstructions("");
+    setEditTone(DEFAULT_REMINDER_TONE);
     setNotice(null);
   }, [reminderSuggestions]);
 
@@ -592,15 +840,17 @@ export default function WorkspaceRemindersPanel({
     schedule: string;
     instructions?: string;
     reminderTimes: ReminderTimeSlot[];
+    alarmTone: ReminderAlarmTone;
   }) {
-    const scheduleResolution = resolveTodayReminderSchedule(new Date(), payload.reminderTimes);
+    const referenceTime = new Date();
+    const scheduleResolution = resolveNextReminderSchedule(referenceTime, payload.reminderTimes);
 
     if (scheduleResolution.error) {
       setNotice(scheduleResolution.error);
       return;
     }
 
-    await primeAlarmAudio();
+    await primeAlarmAudio(payload.alarmTone);
     setSaving(true);
     setNotice(null);
 
@@ -620,16 +870,23 @@ export default function WorkspaceRemindersPanel({
           schedule: payload.schedule,
           instructions: payload.instructions || null,
           reminderTimes: payload.reminderTimes,
+          alarmTone: payload.alarmTone,
         }),
       });
       await loadReminders();
       setNotice(
         permission === "granted"
           ? nextTriggerAt
-            ? `Reminder set. Browser alerts are enabled for today at ${formatReminderTriggerTime(nextTriggerAt)}.`
+            ? `Reminder set. Browser alerts are enabled for ${formatReminderTriggerLabel(
+                nextTriggerAt,
+                referenceTime
+              )}.`
             : "Reminder set. Browser alerts are enabled for the scheduled time."
           : nextTriggerAt
-            ? `Reminder set for today at ${formatReminderTriggerTime(nextTriggerAt)}. Enable browser notifications if you also want pop-up alerts.`
+            ? `Reminder set for ${formatReminderTriggerLabel(
+                nextTriggerAt,
+                referenceTime
+              )}. Enable browser notifications if you also want pop-up alerts.`
             : "Reminder set. Enable browser notifications if you also want pop-up alerts."
       );
     } catch (error) {
@@ -682,6 +939,7 @@ export default function WorkspaceRemindersPanel({
     setEditSchedule(reminder.schedule);
     setEditTimes(formatTimeSlots(reminder.reminder_times));
     setEditInstructions(reminder.instructions || "");
+    setEditTone(normalizeReminderTone(reminder.alarm_tone));
     setNotice(null);
   }
 
@@ -690,29 +948,36 @@ export default function WorkspaceRemindersPanel({
     setEditSchedule("");
     setEditTimes("");
     setEditInstructions("");
+    setEditTone(DEFAULT_REMINDER_TONE);
   }
 
   async function saveReminderEdits(reminder: MedicineReminderRecord) {
-    const reminderTimes = normalizeTimeSlots(editTimes);
+    const parsedReminderTimeInput = parseReminderTimeInput(editTimes);
+    const reminderTimes = parsedReminderTimeInput.reminderTimes;
 
     if (!editSchedule.trim()) {
       setNotice("Schedule is required.");
       return;
     }
 
-    if (reminderTimes.length === 0 || !reminderTimes.every((slot) => isValidTimeSlot(slot.time))) {
-      setNotice("Use 24-hour reminder times in HH:mm format, for example 08:00 or 20:00.");
+    if (
+      reminderTimes.length === 0 ||
+      parsedReminderTimeInput.invalidEntries.length > 0 ||
+      !reminderTimes.every((slot) => isValidTimeSlot(slot.time))
+    ) {
+      setNotice(REMINDER_TIME_HINT);
       return;
     }
 
-    const scheduleResolution = resolveTodayReminderSchedule(new Date(), reminderTimes);
+    const referenceTime = new Date();
+    const scheduleResolution = resolveNextReminderSchedule(referenceTime, reminderTimes);
 
     if (scheduleResolution.error) {
       setNotice(scheduleResolution.error);
       return;
     }
 
-    await primeAlarmAudio();
+    await primeAlarmAudio(editTone);
     setSaving(true);
     setNotice(null);
 
@@ -728,13 +993,17 @@ export default function WorkspaceRemindersPanel({
           schedule: editSchedule.trim(),
           instructions: editInstructions.trim() || null,
           reminderTimes,
+          alarmTone: editTone,
         }),
       });
       await loadReminders();
       stopEditing();
       setNotice(
         nextTriggerAt
-          ? `Reminder updated. The next alert is scheduled for today at ${formatReminderTriggerTime(nextTriggerAt)}.`
+          ? `Reminder updated. The next alert is scheduled for ${formatReminderTriggerLabel(
+              nextTriggerAt,
+              referenceTime
+            )}.`
           : "Reminder updated."
       );
     } catch (error) {
@@ -770,7 +1039,16 @@ export default function WorkspaceRemindersPanel({
         </div>
       </div>
 
-      {notice ? <div className="reminder-notice">{notice}</div> : null}
+      {notice ? (
+        <div className="reminder-notice">
+          <span>{notice}</span>
+          {alarmActive ? (
+            <button type="button" className="stop-alarm-button" onClick={stopAlarmSound}>
+              Stop
+            </button>
+          ) : null}
+        </div>
+      ) : null}
 
       <div className="reminder-grid">
         <div className="reminder-column">
@@ -781,52 +1059,76 @@ export default function WorkspaceRemindersPanel({
             </div>
           ) : (
             <div className="reminder-list">
-              {reminderSuggestions.map((item) => (
-                <article key={`${item.medicineName}-${item.schedule}`} className="reminder-card">
-                  <strong>{item.medicineName}</strong>
-                  <span>{item.dosage || "Dosage not extracted"}</span>
-                  <p>{item.schedule}</p>
-                  <small>{item.instructions}</small>
-                  <label className="field-label">
-                    Reminder time(s)
-                    <input
-                      value={draftTimes[suggestionKey(item)] || ""}
-                      onChange={(event) =>
-                        setDraftTimes((current) => ({
-                          ...current,
-                          [suggestionKey(item)]: event.target.value,
-                        }))
+              {reminderSuggestions.map((item) => {
+                const itemKey = suggestionKey(item);
+                const draftTimeValue = draftTimes[itemKey] || "";
+                const draftTone = normalizeReminderTone(draftTones[itemKey]);
+                const parsedReminderTimeInput = parseReminderTimeInput(draftTimeValue);
+
+                return (
+                  <article key={`${item.medicineName}-${item.schedule}`} className="reminder-card">
+                    <strong>{item.medicineName}</strong>
+                    <span>{item.dosage || "Dosage not extracted"}</span>
+                    <p>{item.schedule}</p>
+                    <small>{item.instructions}</small>
+                    <label className="field-label">
+                      Reminder time(s)
+                      <input
+                        value={draftTimeValue}
+                        onChange={(event) =>
+                          setDraftTimes((current) => ({
+                            ...current,
+                            [itemKey]: event.target.value,
+                          }))
+                        }
+                        placeholder="8:00 AM, 8:00 PM"
+                      />
+                    </label>
+                    <label className="field-label">
+                      Alarm tone
+                      <select
+                        value={draftTone}
+                        onChange={(event) =>
+                          setDraftTones((current) => ({
+                            ...current,
+                            [itemKey]: normalizeReminderTone(event.target.value),
+                          }))
+                        }
+                      >
+                        {REMINDER_ALARM_TONES.map((tone) => (
+                          <option key={tone} value={tone}>
+                            {getReminderToneLabel(tone)}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <button
+                      type="button"
+                      disabled={
+                        saving ||
+                        !parsedReminderTimeInput.reminderTimes.length ||
+                        parsedReminderTimeInput.invalidEntries.length > 0
                       }
-                      placeholder="08:00, 20:00"
-                    />
-                  </label>
-                  <button
-                    type="button"
-                    disabled={
-                      saving ||
-                      !normalizeTimeSlots(draftTimes[suggestionKey(item)] || "").length ||
-                      !normalizeTimeSlots(draftTimes[suggestionKey(item)] || "").every((slot) =>
-                        isValidTimeSlot(slot.time)
-                      )
-                    }
-                    onClick={() =>
-                      createReminder({
-                        medicineName: item.medicineName,
-                        dosage: item.dosage,
-                        schedule: item.schedule,
-                        instructions: item.instructions,
-                        reminderTimes: normalizeTimeSlots(draftTimes[suggestionKey(item)] || ""),
-                      })
-                    }
-                  >
-                    Set Reminder
-                  </button>
-                  <small className="helper-text">
-                    Use 24-hour `HH:mm` format, for example `08:00` or `20:00`. Add multiple
-                    times with commas. Alerts ring at the saved time.
-                  </small>
-                </article>
-              ))}
+                      onClick={() =>
+                        createReminder({
+                          medicineName: item.medicineName,
+                          dosage: item.dosage,
+                          schedule: item.schedule,
+                          instructions: item.instructions,
+                          reminderTimes: parsedReminderTimeInput.reminderTimes,
+                          alarmTone: draftTone,
+                        })
+                      }
+                    >
+                      Set Reminder
+                    </button>
+                    <small className="helper-text">
+                      Use times like `8:00 AM` or `8:00 PM`. Add multiple times with commas, and
+                      the selected tone will play when the alarm triggers.
+                    </small>
+                  </article>
+                );
+              })}
             </div>
           )}
         </div>
@@ -865,8 +1167,21 @@ export default function WorkspaceRemindersPanel({
                         <input
                           value={editTimes}
                           onChange={(event) => setEditTimes(event.target.value)}
-                          placeholder="08:00, 20:00"
+                          placeholder="8:00 AM, 8:00 PM"
                         />
+                      </label>
+                      <label className="field-label">
+                        Alarm tone
+                        <select
+                          value={editTone}
+                          onChange={(event) => setEditTone(normalizeReminderTone(event.target.value))}
+                        >
+                          {REMINDER_ALARM_TONES.map((tone) => (
+                            <option key={tone} value={tone}>
+                              {getReminderToneLabel(tone)}
+                            </option>
+                          ))}
+                        </select>
                       </label>
                       <label className="field-label">
                         Instructions
@@ -898,11 +1213,12 @@ export default function WorkspaceRemindersPanel({
                         </span>
                       </div>
                       <p>{reminder.instructions || "No extra instructions saved."}</p>
+                      <small>Alarm tone: {getReminderToneLabel(reminder.alarm_tone)}</small>
                       <div className="time-pill-row">
                         {reminder.reminder_times.map((slot) => (
                           <span key={`${reminder.id}-${slot.time}`} className="time-pill">
                             {slot.label ? `${slot.label}: ` : ""}
-                            {slot.time}
+                            {formatStoredReminderClockTime(slot.time)}
                           </span>
                         ))}
                       </div>
@@ -967,6 +1283,22 @@ export default function WorkspaceRemindersPanel({
           padding: 12px 14px;
           background: rgba(14, 165, 233, 0.12);
           color: var(--ws-text-soft);
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 12px;
+          flex-wrap: wrap;
+        }
+
+        .stop-alarm-button {
+          border: none;
+          border-radius: 999px;
+          padding: 9px 14px;
+          background: rgba(248, 113, 113, 0.16);
+          color: var(--ws-danger);
+          font-weight: 700;
+          cursor: pointer;
+          flex-shrink: 0;
         }
 
         .reminder-grid {
@@ -1053,6 +1385,7 @@ export default function WorkspaceRemindersPanel({
         }
 
         .field-label input,
+        .field-label select,
         .field-label textarea {
           border: 1px solid var(--ws-border);
           border-radius: 12px;

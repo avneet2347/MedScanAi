@@ -33,9 +33,42 @@ export function jsonError(
   );
 }
 
-export function getErrorMessage(error: unknown, fallback: string) {
+function extractErrorMessage(error: unknown) {
   if (error instanceof Error && error.message.trim()) {
-    return error.message;
+    return error.message.trim();
+  }
+
+  if (typeof error === "string" && error.trim()) {
+    return error.trim();
+  }
+
+  return "";
+}
+
+export function isAiProviderQuotaError(error: unknown) {
+  const message = extractErrorMessage(error).toLowerCase();
+  const status =
+    typeof error === "object" && error && "status" in error
+      ? Number((error as { status?: unknown }).status)
+      : Number.NaN;
+
+  return (
+    status === 429 ||
+    /429|rate limit|quota|billing details|insufficient_quota|requests per min|tokens per min/i.test(
+      message
+    )
+  );
+}
+
+export function getErrorMessage(error: unknown, fallback: string) {
+  if (isAiProviderQuotaError(error)) {
+    return "The configured AI provider quota has been exceeded, so some AI-powered features are temporarily limited. Add billing or configure a backup provider to restore full AI results.";
+  }
+
+  const message = extractErrorMessage(error);
+
+  if (message) {
+    return message;
   }
 
   return fallback;
@@ -44,6 +77,10 @@ export function getErrorMessage(error: unknown, fallback: string) {
 export function getErrorStatus(error: unknown, fallback = 500) {
   if (error instanceof ApiError) {
     return error.status;
+  }
+
+  if (isAiProviderQuotaError(error)) {
+    return 503;
   }
 
   return fallback;

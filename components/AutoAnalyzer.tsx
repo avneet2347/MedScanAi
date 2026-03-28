@@ -56,21 +56,8 @@ async function preprocessImageForOcr(file: File) {
       };
     }
 
-    context.filter = "grayscale(100%) contrast(165%) brightness(110%)";
+    context.filter = "grayscale(100%) contrast(135%) brightness(104%)";
     context.drawImage(image, 0, 0, canvas.width, canvas.height);
-
-    const imageData = context.getImageData(0, 0, canvas.width, canvas.height);
-    const data = imageData.data;
-
-    for (let index = 0; index < data.length; index += 4) {
-      const average = (data[index] + data[index + 1] + data[index + 2]) / 3;
-      const next = average > 160 ? 255 : 0;
-      data[index] = next;
-      data[index + 1] = next;
-      data[index + 2] = next;
-    }
-
-    context.putImageData(imageData, 0, 0);
 
     const blob = await new Promise<Blob | null>((resolve) =>
       canvas.toBlob(resolve, "image/png", 1)
@@ -160,7 +147,7 @@ export default function AutoAnalyzer() {
           createdAt: payload?.createdAt || new Date().toISOString(),
           preprocessing: {
             applied: preprocessingApplied,
-            mode: preprocessingApplied ? "client-threshold-cleanup" : "original-file",
+            mode: preprocessingApplied ? "client-gentle-contrast-cleanup" : "original-file",
           },
         });
       } catch (error) {

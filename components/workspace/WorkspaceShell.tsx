@@ -970,9 +970,9 @@ export default function WorkspaceShell({
           <div className={styles.sectionHeader}>
             <div>
               <div className={joinClassNames(styles.sectionTitle, styles.serif)}>Compare Reports</div>
-              <div className={styles.sectionSubtitle}>Select two or more reports to compare stored metric differences and percentage change.</div>
+              <div className={styles.sectionSubtitle}>Select two or more reports to compare them using AI-generated insights from OCR text and extracted analysis.</div>
             </div>
-            <span className={styles.headerTag}>report_metrics only</span>
+            <span className={styles.headerTag}>AI generated</span>
           </div>
           <WorkspaceReportComparisonPanel authorizedFetchJson={authorizedFetchJson} reports={reports} selectedReportId={selectedReportId} />
         </section>
@@ -994,14 +994,14 @@ export default function WorkspaceShell({
           <div className={styles.sectionHeader}>
             <div>
               <div className={joinClassNames(styles.sectionTitle, styles.serif)}>Report Chat</div>
-              <div className={styles.sectionSubtitle}>Ask follow-up questions once the selected report has been processed.</div>
+              <div className={styles.sectionSubtitle}>Ask about report findings, trends, or symptoms like fever, headache, or cough once the selected report has been processed.</div>
             </div>
             <span className={styles.chatCount}>{chatMessages.length} messages</span>
           </div>
 
           <div className={joinClassNames(styles.card, styles.chatCard)}>
             {!selectedReport ? (
-              <div className={styles.chatEmptyState}>Select a report to start asking questions about medicines, values, or report sections.</div>
+              <div className={styles.chatEmptyState}>Select a report to start asking about medicines, values, report sections, or symptoms.</div>
             ) : reportLoading ? (
               <div className={styles.chatEmptyState}>Loading report chat context...</div>
             ) : (
@@ -1013,7 +1013,7 @@ export default function WorkspaceShell({
 
                 <div className={styles.chatArea}>
                   {chatMessages.length === 0 ? (
-                    <div className={styles.chatEmpty}>No messages yet - ask about a medicine, test value, or report section.</div>
+                    <div className={styles.chatEmpty}>No messages yet - ask about a medicine, test value, report section, or symptoms like fever or headache.</div>
                   ) : (
                     chatMessages.map((message: ChatMessageRecord) => (
                       <article
@@ -1111,7 +1111,7 @@ export default function WorkspaceShell({
                     className={styles.chatInput}
                     value={chatInput}
                     onChange={(event) => onChatInputChange(event.target.value)}
-                    placeholder="Ask about a medicine, test value, or report section..."
+                    placeholder="Ask about a report finding or share symptoms like fever, headache, or cough..."
                     disabled={chatLoading || !selectedReport.analysis_json}
                   />
                   <button type="submit" className={styles.btnPrimary} disabled={chatLoading || !selectedReport.analysis_json}>

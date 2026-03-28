@@ -12,19 +12,43 @@ import type {
 const KNOWN_TESTS = [
   "hba1c",
   "hemoglobin",
+  "hb",
   "creatinine",
   "glucose",
   "blood sugar",
+  "fasting blood sugar",
+  "post prandial",
+  "ppbs",
+  "fbs",
   "tsh",
+  "t3",
+  "t4",
   "cholesterol",
+  "hdl",
+  "ldl",
+  "triglyceride",
   "vitamin d",
+  "vitamin b12",
   "platelet",
   "wbc",
   "rbc",
+  "esr",
+  "sgpt",
+  "sgot",
+  "alt",
+  "ast",
+  "alkaline phosphatase",
+  "bilirubin",
   "sodium",
   "potassium",
-  "bilirubin",
   "urea",
+  "uric acid",
+  "calcium",
+  "protein",
+  "albumin",
+  "globulin",
+  "hdl",
+  "ldl",
   "bp",
   "blood pressure",
 ];
@@ -39,7 +63,16 @@ const MEDICINE_SUFFIXES = [
   "cap",
   "syrup",
   "inj",
+  "injection",
+  "tab.",
+  "cap.",
+  "drops",
+  "ointment",
+  "cream",
 ];
+
+const CLINICAL_LINE_HINTS =
+  /\b(patient|age|sex|doctor|date|diagnosis|impression|advice|remarks|result|range|prescription|rx)\b/i;
 
 function uniqueStrings(values: string[]) {
   return [...new Set(values.map((value) => value.trim()).filter(Boolean))];
@@ -62,7 +95,13 @@ function detectDocumentType(text: string) {
 function extractCandidateLines(text: string) {
   return normalizeText(text)
     .split("\n")
-    .map((line) => line.trim())
+    .map((line) =>
+      line
+        .replace(/[|]{2,}/g, " | ")
+        .replace(/[_=]{2,}/g, " ")
+        .replace(/\s{2,}/g, " ")
+        .trim()
+    )
     .filter(Boolean);
 }
 
@@ -121,8 +160,12 @@ function extractTestValues(lines: string[], language: OutputLanguage): TestValue
 
   for (const line of lines) {
     const lower = line.toLowerCase();
+    const labRowMatch =
+      line.match(
+        /^([A-Za-z][A-Za-z0-9 ()/%.+-]{2,80}?)\s+(-?\d+(?:\.\d+)?)\s*(%|mg\/dL|g\/dL|mIU\/L|uIU\/mL|ng\/mL|mmHg|bpm|IU\/L|U\/L|mmol\/L|cells\/cumm)?(?:\s+(?:ref(?:erence)?(?: range)?|normal)\s*[:\-]?\s*(.+))?$/i
+      ) || null;
 
-    if (!KNOWN_TESTS.some((candidate) => lower.includes(candidate))) {
+    if (!KNOWN_TESTS.some((candidate) => lower.includes(candidate)) && !labRowMatch) {
       continue;
     }
 
@@ -133,14 +176,17 @@ function extractTestValues(lines: string[], language: OutputLanguage): TestValue
       continue;
     }
 
-    const name = line
-      .split(/[:\-]/)[0]
-      .replace(/\s{2,}/g, " ")
-      .trim();
-    const value = valueMatch[1];
-    const unit = valueMatch[2] || "";
+    const name = (labRowMatch?.[1] ||
+      line
+        .split(/[:\-]/)[0]
+        .replace(/\s{2,}/g, " ")
+        .trim()) as string;
+    const value = labRowMatch?.[2] || valueMatch[1];
+    const unit = labRowMatch?.[3] || valueMatch[2] || "";
     const referenceRange =
-      line.match(/(?:ref(?:erence)?(?: range)?|normal)[:\s-]*(.+)$/i)?.[1]?.trim() || "";
+      labRowMatch?.[4]?.trim() ||
+      line.match(/(?:ref(?:erence)?(?: range)?|normal)[:\s-]*(.+)$/i)?.[1]?.trim() ||
+      "";
     const status = inferStatus(name, value, referenceRange);
 
     entries.push({
@@ -173,7 +219,14 @@ function extractMedicines(lines: string[], language: OutputLanguage): MedicineEn
   for (const line of lines) {
     const lower = line.toLowerCase();
 
-    if (!MEDICINE_SUFFIXES.some((suffix) => lower.includes(suffix))) {
+    if (
+      !MEDICINE_SUFFIXES.some((suffix) => lower.includes(suffix)) &&
+      !(lower.includes("rx") && /\b\d+(?:\.\d+)?\s*(mg|mcg|ml)\b/i.test(line))
+    ) {
+      continue;
+    }
+
+    if (CLINICAL_LINE_HINTS.test(line) && !/\b(tab|tablet|cap|capsule|syrup|inj|injection|mg|mcg|ml)\b/i.test(line)) {
       continue;
     }
 
@@ -202,6 +255,27 @@ function extractMedicines(lines: string[], language: OutputLanguage): MedicineEn
 function extractConditions(text: string, language: OutputLanguage): ConditionInsight[] {
   const lower = text.toLowerCase();
   const conditions: ConditionInsight[] = [];
+
+  if (/\b(?:diagnosis|impression)\b/i.test(text) && /\bdiabetes\b/i.test(text)) {
+    conditions.push({
+      name: chooseLocalizedText(language, {
+        en: "Diabetes mentioned in report",
+        hi: "Report me diabetes mention hai",
+        hinglish: "Report me diabetes mention hai",
+      }),
+      confidence: "high",
+      evidence: chooseLocalizedText(language, {
+        en: "The OCR text explicitly mentions diabetes in a diagnosis or impression context.",
+        hi: "OCR text me diagnosis ya impression context me diabetes explicitly mention hai.",
+        hinglish: "OCR text me diagnosis ya impression context me diabetes explicitly mention hai.",
+      }),
+      explanation: chooseLocalizedText(language, {
+        en: "This is based on text explicitly present in the report.",
+        hi: "Ye report me explicitly present text par based hai.",
+        hinglish: "Ye report me explicitly present text par based hai.",
+      }),
+    });
+  }
 
   if (lower.includes("hba1c") || lower.includes("glucose") || lower.includes("diabetes")) {
     conditions.push({

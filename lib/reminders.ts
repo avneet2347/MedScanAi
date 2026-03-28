@@ -1,6 +1,11 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { ApiError } from "@/lib/api-utils";
-import type { MedicineReminderRecord, ReminderTimeSlot } from "@/lib/report-types";
+import {
+  REMINDER_ALARM_TONES,
+  type MedicineReminderRecord,
+  type ReminderAlarmTone,
+  type ReminderTimeSlot,
+} from "@/lib/report-types";
 
 type SupabaseLikeError = {
   code?: string | null;
@@ -91,6 +96,10 @@ function normalizeReminderTimes(value: unknown): ReminderTimeSlot[] {
     .filter((item): item is NormalizedReminderTimeSlot => Boolean(item));
 }
 
+function normalizeReminderTone(value: unknown): ReminderAlarmTone {
+  return REMINDER_ALARM_TONES.find((tone) => tone === value) || "default";
+}
+
 function normalizeReminderRecord(record: Record<string, unknown>) {
   return {
     id: String(record.id || ""),
@@ -101,6 +110,7 @@ function normalizeReminderRecord(record: Record<string, unknown>) {
     schedule: String(record.schedule || ""),
     instructions: record.instructions ? String(record.instructions) : null,
     reminder_times: normalizeReminderTimes(record.reminder_times),
+    alarm_tone: normalizeReminderTone(record.alarm_tone),
     active: Boolean(record.active),
     created_at: String(record.created_at || ""),
     updated_at: String(record.updated_at || ""),
@@ -158,6 +168,7 @@ export async function createMedicineReminder(
     schedule: string;
     instructions?: string | null;
     reminder_times: ReminderTimeSlot[];
+    alarm_tone?: ReminderAlarmTone;
     active?: boolean;
   }
 ) {
@@ -165,6 +176,7 @@ export async function createMedicineReminder(
     .from("medicine_reminders")
     .insert({
       ...payload,
+      alarm_tone: payload.alarm_tone || "default",
       active: payload.active ?? true,
     })
     .select("*")
@@ -187,6 +199,7 @@ export async function updateMedicineReminder(
     schedule: string;
     instructions: string | null;
     reminder_times: ReminderTimeSlot[];
+    alarm_tone: ReminderAlarmTone;
     active: boolean;
   }>
 ) {

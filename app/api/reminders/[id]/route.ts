@@ -5,6 +5,10 @@ import {
   deleteMedicineReminder,
   updateMedicineReminder,
 } from "@/lib/reminders";
+import {
+  REMINDER_ALARM_TONES,
+  type ReminderAlarmTone,
+} from "@/lib/report-types";
 import { requireAuthenticatedUser } from "@/lib/supabase-server";
 
 export const runtime = "nodejs";
@@ -55,6 +59,10 @@ function isValidTimeSlot(time: string) {
   return /^([01]\d|2[0-3]):([0-5]\d)$/.test(time);
 }
 
+function normalizeReminderTone(value: unknown): ReminderAlarmTone {
+  return REMINDER_ALARM_TONES.find((tone) => tone === value) || "default";
+}
+
 export async function PATCH(
   request: Request,
   context: { params: Promise<{ id: string }> }
@@ -68,12 +76,13 @@ export async function PATCH(
           schedule?: string;
           instructions?: string | null;
           reminderTimes?: unknown;
+          alarmTone?: unknown;
           active?: boolean;
         }
       | null;
 
     if (body && hasOwn(body, "reminderTimes") && !Array.isArray(body.reminderTimes)) {
-      return jsonError("reminderTimes must be an array of HH:mm entries.");
+      return jsonError("reminderTimes must be an array of valid reminder times.");
     }
 
     const reminderTimes = normalizeReminderTimes(body?.reminderTimes);
@@ -82,7 +91,7 @@ export async function PATCH(
       reminderTimes &&
       (!reminderTimes.length || !reminderTimes.every((slot) => isValidTimeSlot(slot.time)))
     ) {
-      return jsonError("Reminder times must use HH:mm format.");
+      return jsonError("Reminder times must be valid.");
     }
 
     const updates: Parameters<typeof updateMedicineReminder>[2] = {};
@@ -118,6 +127,10 @@ export async function PATCH(
 
     if (body && hasOwn(body, "reminderTimes")) {
       updates.reminder_times = reminderTimes;
+    }
+
+    if (body && hasOwn(body, "alarmTone")) {
+      updates.alarm_tone = normalizeReminderTone(body.alarmTone);
     }
 
     if (typeof body?.active === "boolean") {

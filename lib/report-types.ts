@@ -152,11 +152,20 @@ export interface MetricSeries {
   points: TrendDataPoint[];
 }
 
+export interface ComparisonValue extends TrendDataPoint {
+  differenceFromFirst: number | null;
+  differenceFromPrevious: number | null;
+  percentChangeFromFirst: number | null;
+  percentChangeFromPrevious: number | null;
+}
+
 export interface ComparisonMetric {
   metricKey: string;
   testName: string;
   unit: string;
-  values: TrendDataPoint[];
+  units: string[];
+  hasUnitMismatch: boolean;
+  values: ComparisonValue[];
   direction: "up" | "down" | "stable" | "mixed";
   delta: number | null;
   deltaPercent: number | null;
@@ -174,6 +183,44 @@ export interface ReportComparisonSummary {
 export interface ReportComparisonResult {
   reports: ReportComparisonSummary[];
   metrics: ComparisonMetric[];
+}
+
+export type AiComparisonDirection =
+  | "improved"
+  | "worsened"
+  | "changed"
+  | "stable"
+  | "mixed"
+  | "uncertain";
+
+export type AiComparisonConfidence = "high" | "medium" | "low";
+
+export interface AiComparisonValue {
+  reportId: string;
+  reportTitle: string;
+  reportDate: string;
+  value: string;
+  note: string;
+}
+
+export interface AiComparisonDifference {
+  id: string;
+  label: string;
+  direction: AiComparisonDirection;
+  summary: string;
+  healthImpact: string;
+  confidence: AiComparisonConfidence;
+  values: AiComparisonValue[];
+}
+
+export interface AiReportComparisonResult {
+  reports: ReportComparisonSummary[];
+  summary: string;
+  healthImpact: string;
+  keyDifferences: AiComparisonDifference[];
+  notes: string[];
+  followUpQuestions: string[];
+  generatedBy: "openai" | "gemini" | "unknown";
 }
 
 export interface ConfidenceScore {
@@ -194,6 +241,9 @@ export interface ReminderTimeSlot {
   label?: string | null;
 }
 
+export const REMINDER_ALARM_TONES = ["default", "soft", "beep", "alert"] as const;
+export type ReminderAlarmTone = (typeof REMINDER_ALARM_TONES)[number];
+
 export interface MedicineReminderRecord {
   id: string;
   user_id: string;
@@ -203,6 +253,7 @@ export interface MedicineReminderRecord {
   schedule: string;
   instructions: string | null;
   reminder_times: ReminderTimeSlot[];
+  alarm_tone: ReminderAlarmTone;
   active: boolean;
   created_at: string;
   updated_at: string;
