@@ -236,6 +236,14 @@ export interface ReportConfidenceSummary {
   overall: ConfidenceScore;
 }
 
+export interface ReportComparisonSummary {
+  id: string;
+  title: string;
+  createdAt: string;
+  reportStatus: string;  
+  overallRisk: RiskLevel | "unknown"; 
+}
+
 export interface ReminderTimeSlot {
   time: string;
   label?: string | null;
@@ -324,18 +332,20 @@ export interface HealthInsights {
   authenticity?: AuthenticityProof | null;
 }
 
+export interface OcrStructuredData {
+  medicines: string[];
+  dosage: string[];
+  instructions: string[];
+  possible_conditions: string[];
+}
+
 export interface OcrResult {
   text: string;
   engine: string;
   confidence: "low" | "medium" | "high";
   rawText?: string;
   warnings?: string[];
-  structured?: {
-    medicines: string[];
-    dosage: string[];
-    instructions: string[];
-    possible_conditions: string[];
-  };
+  structured?: OcrStructuredData;
 }
 
 export interface ReportRecord {
@@ -348,6 +358,8 @@ export interface ReportRecord {
   storage_bucket: string;
   storage_path: string;
   ocr_text: string | null;
+  ocr_raw_text?: string | null;
+  ocr_structured?: OcrStructuredData | null;
   ocr_engine: string | null;
   ocr_status: string;
   analysis_json: MedicalAnalysis | null;

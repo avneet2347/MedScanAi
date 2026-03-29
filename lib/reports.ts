@@ -258,17 +258,41 @@ export async function saveOcrResult(
   reportId: string,
   ocr: OcrResult
 ) {
-  const { data, error } = await supabase
+  const basePayload = {
+    ocr_text: ocr.text,
+    ocr_engine: ocr.engine,
+    ocr_status: "completed",
+    report_status: "ocr_complete",
+  };
+  const extendedPayload = {
+    ...basePayload,
+    ocr_raw_text: ocr.rawText || ocr.text,
+    ocr_structured: ocr.structured || null,
+  };
+  let data: unknown = null;
+  let error: SupabaseLikeError | null = null;
+
+  const extendedWrite = await supabase
     .from("medical_reports")
-    .update({
-      ocr_text: ocr.text,
-      ocr_engine: ocr.engine,
-      ocr_status: "completed",
-      report_status: "ocr_complete",
-    })
+    .update(extendedPayload)
     .eq("id", reportId)
     .select("*")
     .single();
+
+  data = extendedWrite.data;
+  error = extendedWrite.error;
+
+  if (error && isMissingSupabaseColumnError(error, "medical_reports")) {
+    const legacyWrite = await supabase
+      .from("medical_reports")
+      .update(basePayload)
+      .eq("id", reportId)
+      .select("*")
+      .single();
+
+    data = legacyWrite.data;
+    error = legacyWrite.error;
+  }
 
   if (error || !data) {
     throwMissingTableApiError(error, "medical_reports", REPORT_STORAGE_NOT_READY_MESSAGE);

@@ -1,17 +1,12 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { fromBuffer } from "pdf2pic";
 import sharp from "sharp";
 import tesseract from "node-tesseract-ocr";
 import { getErrorMessage, normalizeText } from "@/lib/api-utils";
-import {
-  cleanAndStructureMedicalOcrText,
-  extractTextWithGemini,
-  extractTextWithOpenAI,
-} from "@/lib/openai-service";
-import type { OcrResult } from "@/lib/report-types";
-import { serverConfig } from "@/lib/server-config";
+import { generateFallbackMedicalAnalysis } from "@/lib/fallback-analysis";
+import { renderPdfPagesToPngBuffers } from "@/lib/pdf-rasterizer";
+import type { OcrResult, OcrStructuredData } from "@/lib/report-types";
 
 const OCR_FALLBACK_MESSAGE =
   "OCR could not confidently extract readable medical text from this file. Please upload a clearer JPG, PNG, or PDF scan, then try again.";
@@ -22,6 +17,25 @@ const MEDICAL_READABILITY_PATTERNS = [
   /\b(?:tablet|tab|capsule|cap|syrup|injection|inj|drop|cream|ointment|solution|rx|prescription)\b/i,
   /\b(?:mg|mcg|g|ml|iu|units?|meq|mmhg|bpm|g\/dl|mg\/dl|mmol\/l|ng\/ml|miu\/l|u\/l|cells\/cumm|x10\^3)\b/i,
   /\b(?:reference|range|result|findings|impression|advice|diagnosis|remarks)\b/i,
+];
+
+const ADMINISTRATIVE_NOISE_PATTERNS = [
+  /\b(?:address|road|street|near|phone|mobile|whatsapp|email|website|timing|hours|available|branch)\b/i,
+  /\b(?:hospital|clinic|diagnostic|centre|center|laboratory|lab)\b/i,
+];
+
+const MEDICAL_OCR_NORMALIZATION_RULES: Array<[RegExp, string]> = [
+  [/\bmgi?d[li]\b/gi, "mg/dL"],
+  [/\bg[li]\/d[li]\b/gi, "g/dL"],
+  [/\bmiu\s*\/?\s*l\b/gi, "mIU/L"],
+  [/\bng\s*\/?\s*ml\b/gi, "ng/mL"],
+  [/\bmmh[gq]\b/gi, "mmHg"],
+  [/\bhba[il1]c\b/gi, "HbA1c"],
+  [/\bt\s*3\b/gi, "T3"],
+  [/\bt\s*4\b/gi, "T4"],
+  [/\bt\s*s\s*h\b/gi, "TSH"],
+  [/\bw\s*b\s*c\b/gi, "WBC"],
+  [/\br\s*b\s*c\b/gi, "RBC"],
 ];
 
 type OcrTextAssessment = {
@@ -38,8 +52,11 @@ type PreparedOcrImageVariant = {
   label: string;
 };
 
-function hasReadableText(text: string) {
-  return assessOcrTextQuality(text).readable;
+function isUsableOcrAssessment(assessment: OcrTextAssessment) {
+  return (
+    Boolean(assessment.normalized) &&
+    (assessment.readable || assessment.score >= 18 || assessment.normalized.length >= 60)
+  );
 }
 
 function scoreMedicalLine(line: string) {
@@ -83,7 +100,8 @@ function scoreMedicalLine(line: string) {
 function assessOcrTextQuality(text: string): OcrTextAssessment {
   const normalized = normalizeText(text);
 
-  if (!normalized) {
+  // ✅ Early rejection (very important)
+  if (!normalized || normalized.length < 20) {
     return {
       score: 0,
       readable: false,
@@ -95,9 +113,13 @@ function assessOcrTextQuality(text: string): OcrTextAssessment {
     .split("\n")
     .map((line) => line.trim())
     .filter(Boolean);
+
   const tokens = normalized.split(/\s+/).filter(Boolean);
+
   const wordLikeTokens = tokens.filter((token) => /[A-Za-z]{2,}/.test(token));
   const digitTokens = tokens.filter((token) => /\d/.test(token));
+
+  // ❌ Garbage detection
   const suspiciousTokens = tokens.filter(
     (token) =>
       token.length >= 5 &&
@@ -105,26 +127,54 @@ function assessOcrTextQuality(text: string): OcrTextAssessment {
       !/[aeiou]/i.test(token) &&
       !/\d/.test(token)
   );
+
+  // ✅ Strong medical lines
   const strongLines = lines.filter((line) => scoreMedicalLine(line) >= 4).length;
+
+  // ✅ Medical keyword detection
   const medicalHits = MEDICAL_READABILITY_PATTERNS.reduce(
     (count, pattern) => count + (pattern.test(normalized) ? 1 : 0),
     0
   );
+
+  // ✅ NEW: Structured pattern detection (VERY IMPORTANT)
+  const structuredLines = lines.filter((line) =>
+    /\b[A-Za-z]+\b\s*[:\-]\s*\d+/.test(line)
+  ).length;
+
+  // ✅ NEW: Unit detection (VERY IMPORTANT)
+  const unitHits =
+    (normalized.match(
+      /\b(mg\/dl|g\/dl|mmhg|bpm|mmol\/l|ng\/ml|iu\/l|cells\/cumm)\b/gi
+    ) || []).length;
+
+  // ❌ Noise detection
   const weirdChars = (normalized.match(/[^\p{L}\p{N}\s.,:;/%()+\-]/gu) || []).length;
   const weirdRatio = weirdChars / Math.max(normalized.length, 1);
+
   let score = 0;
 
-  if (normalized.length >= 40) score += 12;
-  if (normalized.length >= 120) score += 8;
+  // ✅ Length & structure
+  if (normalized.length >= 40) score += 10;
+  if (normalized.length >= 120) score += 10;
   if (lines.length >= 3) score += 8;
   if (lines.length >= 8) score += 6;
-  if (wordLikeTokens.length >= 5) score += 12;
+
+  // ✅ Words & numbers
+  if (wordLikeTokens.length >= 5) score += 10;
   if (wordLikeTokens.length >= 12) score += 8;
   if (digitTokens.length >= 2) score += 8;
   if (digitTokens.length >= 6) score += 6;
+
+  // ✅ Medical relevance
   score += Math.min(medicalHits * 8, 24);
   score += Math.min(strongLines * 4, 16);
 
+  // ✅ NEW: Structure + Units (CORE IMPROVEMENT)
+  score += Math.min(structuredLines * 6, 24);
+  score += Math.min(unitHits * 5, 20);
+
+  // ❌ Penalties
   if (tokens.length > 0 && wordLikeTokens.length / tokens.length < 0.35) {
     score -= 10;
   }
@@ -133,21 +183,219 @@ function assessOcrTextQuality(text: string): OcrTextAssessment {
     score -= 12;
   }
 
-  if (weirdRatio > 0.05) {
-    score -= 8;
-  }
+  if (weirdRatio > 0.05) score -= 8;
+  if (weirdRatio > 0.1) score -= 12;
 
-  if (weirdRatio > 0.1) {
-    score -= 10;
-  }
+  // ✅ FINAL DECISION (STRONGER LOGIC)
+  const readable =
+    score >= 25 &&
+    wordLikeTokens.length >= 5 &&
+    (
+      medicalHits >= 2 ||
+      structuredLines >= 2 ||
+      unitHits >= 1 ||
+      strongLines >= 2
+    );
 
   return {
     score,
-    readable:
-      score >= 34 &&
-      wordLikeTokens.length >= 3 &&
-      (medicalHits >= 1 || strongLines >= 2 || digitTokens.length >= 3),
+    readable,
     normalized,
+  };
+}
+
+function normalizeMedicalOcrLine(line: string) {
+  let next = normalizeText(line);
+
+  for (const [pattern, replacement] of MEDICAL_OCR_NORMALIZATION_RULES) {
+    next = next.replace(pattern, replacement);
+  }
+
+  return next
+    .replace(/[|]{2,}/g, " | ")
+    .replace(/[_=]{2,}/g, " ")
+    .replace(/\s*[:|-]\s*/g, (match) => (match.includes(":") ? ": " : " - "))
+    .replace(/\s{2,}/g, " ")
+    .trim();
+}
+
+function selectImportantMedicalLines(text: string, maxLines = 24) {
+  return normalizeText(text)
+    .split("\n")
+    .map((line, index) => {
+      const normalizedLine = normalizeMedicalOcrLine(line);
+
+      return {
+        index,
+        line: normalizedLine,
+        score: scoreMedicalLine(normalizedLine),
+      };
+    })
+    .filter((item) => item.line && item.score >= 2)
+    .sort((left, right) => right.score - left.score || left.index - right.index)
+    .slice(0, maxLines)
+    .sort((left, right) => left.index - right.index)
+    .map((item) => item.line);
+}
+
+function isLikelyAdministrativeNoise(line: string) {
+  return (
+    ADMINISTRATIVE_NOISE_PATTERNS.some((pattern) => pattern.test(line)) &&
+    scoreMedicalLine(line) < 3 &&
+    !/\b(?:bp|pulse|glucose|sugar|tablet|capsule|mg|ml|result|test|value)\b/i.test(line)
+  );
+}
+
+function uniqueNormalizedStrings(values: Array<string | null | undefined>) {
+  return Array.from(
+    new Set(
+      values
+        .map((value) => normalizeText(value || ""))
+        .filter((value) => value.length > 0)
+    )
+  );
+}
+
+function normalizeStructuredOcrData(structured?: Partial<OcrStructuredData> | null): OcrStructuredData {
+  return {
+    medicines: uniqueNormalizedStrings(structured?.medicines || []),
+    dosage: uniqueNormalizedStrings(structured?.dosage || []),
+    instructions: uniqueNormalizedStrings(structured?.instructions || []),
+    possible_conditions: uniqueNormalizedStrings(structured?.possible_conditions || []),
+  };
+}
+
+function buildHeuristicMedicalOcrText(text: string) {
+  const normalized = normalizeText(text);
+
+  if (!normalized) {
+    return "";
+  }
+
+  const rawLines = normalized
+    .split("\n")
+    .map((line) => normalizeMedicalOcrLine(line))
+    .filter(Boolean);
+  const cleanedLines: string[] = [];
+  const seenLines = new Map<string, number>();
+
+  for (const line of rawLines) {
+    if (line.length < 2) {
+      continue;
+    }
+
+    if (isLikelyAdministrativeNoise(line)) {
+      continue;
+    }
+
+    const normalizedKey = line.toLowerCase();
+    const repeatCount = seenLines.get(normalizedKey) || 0;
+    const lineScore = scoreMedicalLine(line);
+
+    if (repeatCount > 0 && lineScore <= 4) {
+      continue;
+    }
+
+    seenLines.set(normalizedKey, repeatCount + 1);
+
+    const previousLine = cleanedLines[cleanedLines.length - 1] || "";
+    const shouldMergeWithPrevious =
+      previousLine.length > 0 &&
+      previousLine.length < 60 &&
+      line.length < 90 &&
+      scoreMedicalLine(`${previousLine} ${line}`) >= scoreMedicalLine(previousLine) + 2;
+
+    if (shouldMergeWithPrevious) {
+      cleanedLines[cleanedLines.length - 1] = `${previousLine} ${line}`
+        .replace(/\s{2,}/g, " ")
+        .trim();
+      continue;
+    }
+
+    if (
+      lineScore >= 2 ||
+      /\b(?:patient|date|age|sex|doctor|diagnosis|medicine|advice|remarks|impression)\b/i.test(
+        line
+      )
+    ) {
+      cleanedLines.push(line);
+    }
+  }
+
+  const prioritizedLines =
+    cleanedLines.length > 0
+      ? cleanedLines
+      : selectImportantMedicalLines(normalized, 24).map((line) => normalizeMedicalOcrLine(line));
+
+  return normalizeText(prioritizedLines.join("\n")) || normalized;
+}
+
+function normalizeCleanedOcrText(cleanedText: string, fallbackText: string) {
+  const normalizedCleanedText = normalizeText(cleanedText);
+  const heuristicText = buildHeuristicMedicalOcrText(fallbackText);
+  const normalizedFallbackText = normalizeText(fallbackText);
+  const cleanedImportantLines = selectImportantMedicalLines(normalizedCleanedText, 24).length;
+  const fallbackImportantLines = selectImportantMedicalLines(normalizedFallbackText, 24).length;
+  const cleanedLooksOverCompressed =
+    Boolean(normalizedCleanedText) &&
+    Boolean(normalizedFallbackText) &&
+    normalizedCleanedText.length < normalizedFallbackText.length * 0.45 &&
+    cleanedImportantLines + 2 < fallbackImportantLines;
+
+  return (
+    (cleanedLooksOverCompressed ? "" : normalizedCleanedText) ||
+    heuristicText ||
+    normalizedFallbackText
+  );
+}
+
+function buildHeuristicStructuredOcrData(text: string) {
+  const fallbackAnalysis = generateFallbackMedicalAnalysis(text, "en");
+
+  return normalizeStructuredOcrData({
+    medicines: fallbackAnalysis.medicines.map((item) => item.name),
+    dosage: fallbackAnalysis.medicines.map((item) => item.dosage),
+    instructions: [
+      ...fallbackAnalysis.medicines.map((item) =>
+        [item.frequency, item.notes].filter(Boolean).join(" - ")
+      ),
+      ...fallbackAnalysis.precautions,
+    ],
+    possible_conditions: fallbackAnalysis.possibleConditions.map((item) => item.name),
+  });
+}
+
+function cleanAndStructureMedicalOcrText(payload: { extractedText: string }) {
+  const extractedText = normalizeText(payload.extractedText);
+
+  if (!extractedText) {
+    return {
+      text: "",
+      rawText: "",
+      structured: normalizeStructuredOcrData(),
+      warnings: ["OCR cleanup received empty text and returned an empty local heuristic result."],
+      engine: "heuristic-medical-cleanup",
+    };
+  }
+
+  const cleanedText = normalizeCleanedOcrText(
+    buildHeuristicMedicalOcrText(extractedText),
+    extractedText
+  );
+  const structured = buildHeuristicStructuredOcrData(cleanedText || extractedText);
+  const warnings =
+    cleanedText && cleanedText !== extractedText
+      ? [
+          "OCR text was cleaned locally with line-preserving heuristics to improve readability before analysis.",
+        ]
+      : undefined;
+
+  return {
+    text: cleanedText || extractedText,
+    rawText: extractedText,
+    structured,
+    warnings,
+    engine: "heuristic-medical-cleanup",
   };
 }
 
@@ -171,22 +419,24 @@ async function buildImageVariantsForOcr(payload: {
   try {
     const metadata = await sharp(payload.buffer, { failOn: "none" }).metadata();
     const baseName = path.basename(payload.filename, path.extname(payload.filename) || undefined) || "scan";
-    let pipeline = sharp(payload.buffer, { failOn: "none" }).rotate();
+    let pipeline = sharp(payload.buffer, { failOn: "none" })
+      .rotate()
+      .flatten({ background: "#ffffff" });
     const variants = [originalVariant];
 
     if (metadata.width && metadata.width < 1600) {
       pipeline = pipeline.resize({
-        width: 1600,
+        width: 1800,
         fit: "inside",
         withoutEnlargement: false,
       });
-    } else if (metadata.width && metadata.width > 2200) {
+    } else if (metadata.width && metadata.width > 2400) {
       pipeline = pipeline.resize({
-        width: 2200,
+        width: 2400,
         fit: "inside",
         withoutEnlargement: true,
-        });
-      }
+      });
+    }
 
     const normalizedBuffer = await pipeline
       .clone()
@@ -205,13 +455,31 @@ async function buildImageVariantsForOcr(payload: {
       label: "normalized",
     });
 
+    const highContrastBuffer = await pipeline
+      .clone()
+      .grayscale()
+      .normalize()
+      .median(1)
+      .linear(1.24, -18)
+      .sharpen({ sigma: 1.35, m1: 0.45, m2: 2.4 })
+      .png({ compressionLevel: 9 })
+      .toBuffer();
+
+    variants.push({
+      buffer: highContrastBuffer,
+      filename: `${baseName}-ocr-contrast.png`,
+      mimeType: "image/png",
+      preprocessingApplied: true,
+      label: "high-contrast",
+    });
+
     const thresholdedBuffer = await pipeline
       .clone()
       .grayscale()
       .normalize()
       .median(1)
-      .linear(1.2, -14)
-      .threshold(178, { grayscale: true })
+      .linear(1.28, -20)
+      .threshold(172, { grayscale: true })
       .sharpen({ sigma: 0.9, m1: 0.4, m2: 1.8 })
       .png({ compressionLevel: 9 })
       .toBuffer();
@@ -260,7 +528,7 @@ async function runTesseractOnImage(
 }
 
 async function runBestTesseractOnImageVariants(variants: PreparedOcrImageVariant[]) {
-  const configs = [{ psm: 6 }, { psm: 11 }, { psm: 4 }];
+  const configs = [{ psm: 6 }, { psm: 4 }, { psm: 11 }];
   const warnings: string[] = [];
   let best:
     | {
@@ -313,83 +581,55 @@ async function runBestTesseractOnImageVariants(variants: PreparedOcrImageVariant
 }
 
 async function runTesseractOnPdf(buffer: Buffer) {
-  const convert = fromBuffer(buffer, {
-    density: 200,
-    format: "png",
-    width: 2000,
-    preserveAspectRatio: true,
+  const pageImages = await renderPdfPagesToPngBuffers(buffer, {
+    maxPages: 5,
+    targetWidth: 2200,
   });
+  const warnings: string[] = [];
+  const strongPages: Array<{ pageNumber: number; text: string; score: number }> = [];
+  const fallbackPages: Array<{ pageNumber: number; text: string; score: number }> = [];
 
-  const pages = await convert.bulk(-1, { responseType: "buffer" });
-  const pageBuffers = pages.slice(0, 4);
-  const extractedPages: string[] = [];
-
-  for (const page of pageBuffers) {
-    if (!page.buffer) {
-      continue;
-    }
-
+  for (const pageImage of pageImages) {
     const pageVariants = await buildImageVariantsForOcr({
-      buffer: page.buffer,
-      filename: `pdf-page-${page.page}.png`,
+      buffer: pageImage.buffer,
+      filename: `pdf-page-${pageImage.pageNumber}.png`,
       mimeType: "image/png",
     });
     const bestAttempt = await runBestTesseractOnImageVariants(pageVariants);
-    const text = bestAttempt.text;
+    warnings.push(...bestAttempt.warnings.map((warning) => `Page ${pageImage.pageNumber}: ${warning}`));
 
-    if (hasReadableText(text)) {
-      extractedPages.push(text);
+    const assessment = assessOcrTextQuality(bestAttempt.text);
+
+    if (isUsableOcrAssessment(assessment)) {
+      strongPages.push({
+        pageNumber: pageImage.pageNumber,
+        text: assessment.normalized,
+        score: assessment.score,
+      });
+      continue;
+    }
+
+    if (assessment.normalized) {
+      fallbackPages.push({
+        pageNumber: pageImage.pageNumber,
+        text: assessment.normalized,
+        score: assessment.score,
+      });
+      warnings.push(
+        `Page ${pageImage.pageNumber} OCR was low confidence and will only be used if no stronger page text is available.`
+      );
     }
   }
 
-  return normalizeText(extractedPages.join("\n\n"));
-}
-
-async function extractTextWithPreferredAiVision(payload: {
-  buffer: Buffer;
-  filename: string;
-  mimeType: string;
-}) {
-  const attempts: Array<{
-    engine: string;
-    run: () => Promise<string>;
-  }> = [];
-
-  if (serverConfig.geminiApiKey) {
-    attempts.push({
-      engine: payload.mimeType === "application/pdf" ? "gemini-document-ocr" : "gemini-vision-ocr",
-      run: () => extractTextWithGemini(payload),
-    });
-  }
-
-  attempts.push({
-    engine: payload.mimeType === "application/pdf" ? "openai-document-ocr" : "openai-vision-ocr",
-    run: () => extractTextWithOpenAI(payload),
-  });
-
-  const warnings: string[] = [];
-
-  for (const attempt of attempts) {
-    try {
-      const text = normalizeText(await attempt.run());
-
-      if (hasReadableText(text)) {
-        return {
-          text,
-          engine: attempt.engine,
-          warnings,
-        };
-      }
-
-      warnings.push(`${attempt.engine} returned text, but it was not readable enough to trust.`);
-    } catch (error) {
-      warnings.push(`${attempt.engine} failed: ${getErrorMessage(error, "OCR unavailable.")}`);
-    }
-  }
+  const selectedPages =
+    strongPages.length > 0
+      ? strongPages
+      : fallbackPages
+          .sort((left, right) => right.score - left.score || left.pageNumber - right.pageNumber)
+          .slice(0, Math.min(2, fallbackPages.length));
 
   return {
-    text: "",
-    engine: "ai-vision-unavailable",
+    text: normalizeText(selectedPages.map((page) => page.text).join("\n\n")),
     warnings,
   };
 }
@@ -442,120 +682,71 @@ export async function extractTextFromDocument(payload: {
   mimeType: string;
 }): Promise<OcrResult> {
   if (payload.mimeType === "application/pdf") {
-    const aiAttempt = await extractTextWithPreferredAiVision(payload);
-    const aiAssessment = assessOcrTextQuality(aiAttempt.text);
-    let bestCandidate: {
-      text: string;
-      engine: string;
-      confidence: OcrResult["confidence"];
-    } | null = aiAssessment.readable
-      ? {
-          text: aiAssessment.normalized,
-          engine: aiAttempt.engine,
-          confidence: aiAssessment.score >= 68 ? "high" : "medium",
-        }
-      : null;
+    const preprocessingWarnings = [
+      "Rendered the PDF locally and prepared OCR-safe page images with grayscale, sharpening, contrast normalization, and thresholding.",
+    ];
 
     try {
-      const localPdfText = await runTesseractOnPdf(payload.buffer);
-      const localAssessment = assessOcrTextQuality(localPdfText);
+      const localPdfAttempt = await runTesseractOnPdf(payload.buffer);
+      const localAssessment = assessOcrTextQuality(localPdfAttempt.text);
 
-      if (
-        localAssessment.readable &&
-        (!bestCandidate || localAssessment.score > aiAssessment.score)
-      ) {
-        bestCandidate = {
-          text: localAssessment.normalized,
+      if (isUsableOcrAssessment(localAssessment)) {
+        return finalizeOcrResult({
+          rawText: localAssessment.normalized,
           engine: "tesseract-pdf",
-          confidence: localAssessment.score >= 68 ? "high" : "medium",
-        };
+          confidence:
+            localAssessment.score >= 68
+              ? "high"
+              : localAssessment.score >= 42
+                ? "medium"
+                : "low",
+          warnings: [...preprocessingWarnings, ...localPdfAttempt.warnings],
+        });
       }
+
+      return buildFallbackOcrResult([
+        ...preprocessingWarnings,
+        ...localPdfAttempt.warnings,
+        "Tesseract could not extract enough readable PDF text to trust the result.",
+      ]);
     } catch (error) {
-      aiAttempt.warnings.push(
-        `tesseract-pdf failed: ${getErrorMessage(error, "Local PDF OCR unavailable.")}`
-      );
+      return buildFallbackOcrResult([
+        ...preprocessingWarnings,
+        `tesseract-pdf failed: ${getErrorMessage(error, "Local PDF OCR unavailable.")}`,
+      ]);
     }
-
-    if (bestCandidate) {
-      return finalizeOcrResult({
-        rawText: bestCandidate.text,
-        engine: bestCandidate.engine,
-        confidence: bestCandidate.confidence,
-        warnings: aiAttempt.warnings,
-      });
-    }
-
-    return buildFallbackOcrResult(aiAttempt.warnings);
   }
 
   const imageVariants = await buildImageVariantsForOcr(payload);
   const preprocessingWarnings =
     imageVariants.filter((variant) => variant.preprocessingApplied).length > 0
       ? [
-          "Prepared multiple OCR-safe image variants with grayscale, sharpening, contrast normalization, and thresholding.",
+          "Prepared multiple OCR-safe image variants with grayscale, sharpening, contrast boosting, and thresholding.",
         ]
       : [];
-  const aiAttemptOriginal = await extractTextWithPreferredAiVision(payload);
-  let bestAiAttempt = aiAttemptOriginal;
-  let bestAiAssessment = assessOcrTextQuality(aiAttemptOriginal.text);
-
-  const normalizedVariant = imageVariants.find((variant) => variant.label === "normalized");
-
-  if (!bestAiAssessment.readable && normalizedVariant) {
-    const aiAttemptNormalized = await extractTextWithPreferredAiVision(normalizedVariant);
-    const normalizedAssessment = assessOcrTextQuality(aiAttemptNormalized.text);
-
-    if (normalizedAssessment.score > bestAiAssessment.score) {
-      bestAiAttempt = {
-        text: aiAttemptNormalized.text,
-        engine: aiAttemptNormalized.engine,
-        warnings: [...bestAiAttempt.warnings, ...aiAttemptNormalized.warnings],
-      };
-      bestAiAssessment = normalizedAssessment;
-    } else {
-      bestAiAttempt.warnings.push(...aiAttemptNormalized.warnings);
-    }
-  }
-
-  let bestCandidate: {
-    text: string;
-    engine: string;
-    confidence: OcrResult["confidence"];
-  } | null = bestAiAssessment.readable
-    ? {
-        text: bestAiAssessment.normalized,
-        engine: bestAiAttempt.engine,
-        confidence: bestAiAssessment.score >= 68 ? "high" : "medium",
-      }
-    : null;
 
   try {
     const localAttempt = await runBestTesseractOnImageVariants(imageVariants);
-    bestAiAttempt.warnings.push(...localAttempt.warnings);
     const localAssessment = assessOcrTextQuality(localAttempt.text);
 
-    if (
-      localAssessment.readable &&
-      (!bestCandidate || localAssessment.score > bestAiAssessment.score)
-    ) {
-      bestCandidate = {
-        text: localAssessment.normalized,
+    if (isUsableOcrAssessment(localAssessment)) {
+      return finalizeOcrResult({
+        rawText: localAssessment.normalized,
         engine: localAttempt.engine,
         confidence: localAttempt.confidence,
-      };
+        warnings: [...preprocessingWarnings, ...localAttempt.warnings],
+      });
     }
+
+    return buildFallbackOcrResult([
+      ...preprocessingWarnings,
+      ...localAttempt.warnings,
+      "Tesseract could not extract enough readable image text to trust the result.",
+    ]);
   } catch (error) {
-    bestAiAttempt.warnings.push(`tesseract failed: ${getErrorMessage(error, "Local OCR unavailable.")}`);
+    return buildFallbackOcrResult([
+      ...preprocessingWarnings,
+      `tesseract failed: ${getErrorMessage(error, "Local OCR unavailable.")}`,
+    ]);
   }
-
-  if (bestCandidate) {
-    return finalizeOcrResult({
-      rawText: bestCandidate.text,
-      engine: bestCandidate.engine,
-      confidence: bestCandidate.confidence,
-      warnings: [...preprocessingWarnings, ...bestAiAttempt.warnings],
-    });
-  }
-
-  return buildFallbackOcrResult([...preprocessingWarnings, ...bestAiAttempt.warnings]);
 }

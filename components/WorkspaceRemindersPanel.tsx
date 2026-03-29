@@ -535,7 +535,7 @@ export default function WorkspaceRemindersPanel({
       await audio.play();
     };
 
-    let audio = ensureAlarmAudioElement(normalizedTone);
+    const audio = ensureAlarmAudioElement(normalizedTone);
 
     try {
       await playAudio(audio);
@@ -574,7 +574,7 @@ export default function WorkspaceRemindersPanel({
       }
 
       const normalizedTone = normalizeReminderTone(tone);
-      let audio = ensureAlarmAudioElement(normalizedTone);
+      const audio = ensureAlarmAudioElement(normalizedTone);
 
       if (!alarmAudioUnlockedRef.current) {
         try {

@@ -1,9 +1,8 @@
 import crypto from "node:crypto";
-import OpenAI, { toFile } from "openai";
+import OpenAI from "openai";
 import {
   ApiError,
   getErrorMessage,
-  isAiProviderQuotaError,
   normalizeText,
   safeJsonParse,
 } from "@/lib/api-utils";
@@ -24,6 +23,7 @@ import type {
   MedicalAnalysis,
   MedicineEntry,
   OutputLanguage,
+  OcrStructuredData,
   OcrResult,
   ReportComparisonSummary,
   TestStatus,
@@ -113,37 +113,6 @@ const medicalAnalysisSchema = {
       items: { type: "string" },
     },
     safetyFlags: {
-      type: "array",
-      items: { type: "string" },
-    },
-  },
-} as const;
-
-const medicalOcrCleanupSchema = {
-  type: "object",
-  additionalProperties: false,
-  required: [
-    "cleanedText",
-    "medicines",
-    "dosage",
-    "instructions",
-    "possible_conditions",
-  ],
-  properties: {
-    cleanedText: { type: "string" },
-    medicines: {
-      type: "array",
-      items: { type: "string" },
-    },
-    dosage: {
-      type: "array",
-      items: { type: "string" },
-    },
-    instructions: {
-      type: "array",
-      items: { type: "string" },
-    },
-    possible_conditions: {
       type: "array",
       items: { type: "string" },
     },
@@ -258,18 +227,11 @@ const symptomSupportSchema = {
   },
 } as const;
 
-type MedicalOcrCleanupPayload = {
-  cleanedText: string;
-  medicines: string[];
-  dosage: string[];
-  instructions: string[];
-  possible_conditions: string[];
-};
-
 type ComparisonSourceReport = {
   id: string;
   title?: string | null;
   createdAt: string;
+  content?: string; 
   reportStatus?: string | null;
   ocrText?: string | null;
   analysis?: MedicalAnalysis | null;
@@ -604,6 +566,15 @@ function uniqueNormalizedStrings(values: Array<string | null | undefined>) {
   );
 }
 
+function normalizeStructuredOcrData(structured?: OcrStructuredData | null): OcrStructuredData {
+  return {
+    medicines: uniqueNormalizedStrings(structured?.medicines || []),
+    dosage: uniqueNormalizedStrings(structured?.dosage || []),
+    instructions: uniqueNormalizedStrings(structured?.instructions || []),
+    possible_conditions: uniqueNormalizedStrings(structured?.possible_conditions || []),
+  };
+}
+
 function normalizeConditionInsights(items: ConditionInsight[]) {
   return dedupeByKey(
     (items || [])
@@ -721,15 +692,28 @@ function enrichTestsWithFallback(testValues: TestValueEntry[], fallbackTests: Te
 
 function buildAnalysisEvidenceBundle(
   extractedText: string,
-  fallbackAnalysis: MedicalAnalysis
+  fallbackAnalysis: MedicalAnalysis,
+  structuredOcr?: OcrStructuredData | null
 ): AnalysisEvidenceBundle {
+  const normalizedStructuredOcr = normalizeStructuredOcrData(structuredOcr);
+
   return {
     importantLines: selectImportantMedicalLines(extractedText),
-    candidateMedicines: fallbackAnalysis.medicines.slice(0, 8).map((item) => ({
-      name: item.name,
-      dosage: item.dosage,
-      frequency: item.frequency,
-    })),
+    candidateMedicines: dedupeByKey(
+      [
+        ...fallbackAnalysis.medicines.slice(0, 8).map((item) => ({
+          name: item.name,
+          dosage: item.dosage,
+          frequency: item.frequency,
+        })),
+        ...normalizedStructuredOcr.medicines.slice(0, 8).map((name, index) => ({
+          name,
+          dosage: normalizedStructuredOcr.dosage[index] || "",
+          frequency: "",
+        })),
+      ],
+      (item) => normalizeLookupKey(item.name)
+    ),
     candidateTestValues: fallbackAnalysis.testValues.slice(0, 10).map((item) => ({
       name: item.name,
       value: item.value,
@@ -737,16 +721,23 @@ function buildAnalysisEvidenceBundle(
       referenceRange: item.referenceRange,
       status: item.status,
     })),
-    candidatePossibleConditions: fallbackAnalysis.possibleConditions
-      .slice(0, 5)
-      .map((item) => item.name),
-    candidatePrecautions: fallbackAnalysis.precautions.slice(0, 4),
+    candidatePossibleConditions: uniqueNormalizedStrings([
+      ...fallbackAnalysis.possibleConditions.slice(0, 5).map((item) => item.name),
+      ...normalizedStructuredOcr.possible_conditions.slice(0, 5),
+    ]),
+    candidatePrecautions: uniqueNormalizedStrings([
+      ...fallbackAnalysis.precautions.slice(0, 4),
+      ...normalizedStructuredOcr.instructions.slice(0, 4),
+    ]),
   };
 }
 
 function buildMedicalAnalysisPrompt(language: OutputLanguage) {
   return [
     "You structure OCR'd medical documents into strict JSON for patients.",
+    "Treat the PRIMARY SOURCE OCR TEXT as the source of truth for all facts.",
+    "Use the SECONDARY CLEANED OCR TEXT and OCR STRUCTURE HINTS only to recover formatting or clarify labels from the same document.",
+    "If the primary OCR text conflicts with helper text, trust the primary OCR text.",
     "Use only facts present in the OCR text or clearly repeated in the evidence brief.",
     "Never invent diagnoses, medicines, doses, values, units, dates, or instructions.",
     "If the OCR text is noisy, incomplete, or ambiguous, prefer empty arrays and explicit uncertainty over guessing.",
@@ -754,11 +745,12 @@ function buildMedicalAnalysisPrompt(language: OutputLanguage) {
     "Prefer exact medicine names, numeric values, units, and reference ranges as written in the report.",
     "Ignore non-clinical noise such as addresses, billing text, repeated headers, and branding unless clinically relevant.",
     "Ignore hospital names, addresses, phone numbers, availability text, and promotional text unless they directly describe a finding or instruction.",
-    "overview must briefly describe what this document appears to contain and the most important clinical findings.",
-    "plainLanguageSummary must explain the report in simple, user-friendly language and mention the most important medicine or abnormal result if available.",
-    "possibleConditions should be conservative and evidence-based. Do not infer a disease from a medicine name alone.",
+    "overview must briefly describe what this document appears to contain and summarize the most important clinical findings only.",
+    "plainLanguageSummary must clearly cover: report summary, key findings, abnormal values if any, and a simple patient-friendly explanation.",
+    "possibleConditions should be conservative and evidence-based. Do not infer a disease from a medicine name alone. Leave this empty when the report does not support a condition hypothesis.",
     "medicines should contain exact extracted medicines with dosage and frequency when available. Leave fields blank instead of guessing.",
     "testValues should include only values actually present in the report. Use status='unknown' when the direction is unclear.",
+    "For each test value, prefer exact rows from the report and keep the value, unit, and reference range tightly grounded to the OCR text.",
     "precautions, followUpQuestions, and safetyFlags should be short, practical, and grounded in the report.",
     "Deduplicate repeated items and prefer the clearest version.",
     languageInstruction(language),
@@ -766,24 +758,291 @@ function buildMedicalAnalysisPrompt(language: OutputLanguage) {
 }
 
 function buildMedicalAnalysisUserMessage(payload: {
-  extractedText: string;
+  primaryOcrText: string;
+  cleanedOcrText?: string;
   evidenceBundle: AnalysisEvidenceBundle;
+  structuredOcr?: OcrStructuredData | null;
+  ocrEngine?: string;
 }) {
+  const structuredOcr = normalizeStructuredOcrData(payload.structuredOcr);
+  const hasDistinctCleanedText =
+    normalizeText(payload.cleanedOcrText || "") &&
+    normalizeText(payload.cleanedOcrText || "") !== normalizeText(payload.primaryOcrText);
+
   return [
     "Analyze this medical document and return JSON only.",
-    "The evidence brief is a helper summary extracted from the same OCR text. If there is any conflict, trust the OCR text over the brief.",
+    "The evidence brief and OCR structure hints are helper summaries extracted from the same document.",
+    "If there is any conflict, trust the PRIMARY SOURCE OCR TEXT over everything else.",
+    payload.ocrEngine ? `OCR engine: ${payload.ocrEngine}` : "",
     "",
     "IMPORTANT CLINICAL LINES:",
     payload.evidenceBundle.importantLines.length > 0
       ? payload.evidenceBundle.importantLines.map((line) => `- ${line}`).join("\n")
       : "- None confidently isolated.",
     "",
-    "OCR TEXT:",
-    payload.extractedText,
+    "PRIMARY SOURCE OCR TEXT:",
+    payload.primaryOcrText,
+    "",
+    hasDistinctCleanedText ? "SECONDARY CLEANED OCR TEXT:" : "",
+    hasDistinctCleanedText ? payload.cleanedOcrText || "" : "",
+    "",
+    "OCR STRUCTURE HINTS:",
+    JSON.stringify(structuredOcr, null, 2),
     "",
     "EVIDENCE BRIEF:",
     JSON.stringify(payload.evidenceBundle, null, 2),
-  ].join("\n");
+  ]
+    .filter((part) => part !== "")
+    .join("\n");
+}
+
+function buildAnalysisEvidenceSearchText(values: Array<string | null | undefined>) {
+  const rawText = normalizeText(values.filter(Boolean).join("\n")).toLowerCase();
+  const normalizedText = normalizeLookupKey(values.filter(Boolean).join("\n"));
+
+  return {
+    rawText,
+    normalizedText,
+  };
+}
+
+function hasGroundedEvidence(
+  candidate: string,
+  evidenceText: ReturnType<typeof buildAnalysisEvidenceSearchText>
+) {
+  const normalizedCandidate = normalizeLookupKey(candidate);
+  const rawCandidate = normalizeText(candidate).toLowerCase();
+
+  if (!normalizedCandidate) {
+    return false;
+  }
+
+  if (rawCandidate.length >= 3 && evidenceText.rawText.includes(rawCandidate)) {
+    return true;
+  }
+
+  if (normalizedCandidate.length >= 3 && evidenceText.normalizedText.includes(normalizedCandidate)) {
+    return true;
+  }
+
+  const tokens = normalizedCandidate
+    .split(" ")
+    .filter((token) => token.length >= 4 || /\d/.test(token));
+
+  return tokens.length > 0 && tokens.every((token) => evidenceText.normalizedText.includes(token));
+}
+
+function formatAnalysisValue(entry: Pick<TestValueEntry, "name" | "value" | "unit">) {
+  const unit = entry.unit ? ` ${entry.unit}` : "";
+  return `${entry.name} ${entry.value}${unit}`.trim();
+}
+
+function isAbnormalTestStatus(status: TestStatus) {
+  return status === "high" || status === "low" || status === "borderline" || status === "abnormal";
+}
+
+function buildGroundedOverview(analysis: MedicalAnalysis, language: OutputLanguage) {
+  const documentType = normalizeText(analysis.documentType || "") || "medical report";
+  const abnormalValues = analysis.testValues.filter((item) => isAbnormalTestStatus(item.status)).slice(0, 3);
+
+  if (abnormalValues.length > 0) {
+    return chooseLocalizedText(language, {
+      en: `This appears to be a ${documentType} with key findings including ${abnormalValues
+        .map((item) => formatAnalysisValue(item))
+        .join(", ")}.`,
+      hi: `Yeh ${documentType} lagta hai jismein key findings mein ${abnormalValues
+        .map((item) => formatAnalysisValue(item))
+        .join(", ")} shamil hain.`,
+      hinglish: `Yeh ${documentType} lagta hai jismein key findings mein ${abnormalValues
+        .map((item) => formatAnalysisValue(item))
+        .join(", ")} shamil hain.`,
+    });
+  }
+
+  if (analysis.testValues.length > 0) {
+    return chooseLocalizedText(language, {
+      en: `This appears to be a ${documentType} with ${analysis.testValues.length} extracted test value(s).`,
+      hi: `Yeh ${documentType} lagta hai jismein ${analysis.testValues.length} extracted test value(s) mile hain.`,
+      hinglish: `Yeh ${documentType} lagta hai jismein ${analysis.testValues.length} extracted test value(s) mile hain.`,
+    });
+  }
+
+  if (analysis.medicines.length > 0) {
+    return chooseLocalizedText(language, {
+      en: `This appears to be a ${documentType} with ${analysis.medicines.length} medicine entry(ies) mentioned.`,
+      hi: `Yeh ${documentType} lagta hai jismein ${analysis.medicines.length} medicine entry(ies) mention hui hain.`,
+      hinglish: `Yeh ${documentType} lagta hai jismein ${analysis.medicines.length} medicine entry(ies) mention hui hain.`,
+    });
+  }
+
+  return chooseLocalizedText(language, {
+    en: `This appears to be a ${documentType} based on the uploaded scan.`,
+    hi: `Uploaded scan ke basis par yeh ${documentType} lagta hai.`,
+    hinglish: `Uploaded scan ke basis par yeh ${documentType} lagta hai.`,
+  });
+}
+
+function buildGroundedPlainLanguageSummary(analysis: MedicalAnalysis, language: OutputLanguage) {
+  const abnormalValues = analysis.testValues.filter((item) => isAbnormalTestStatus(item.status)).slice(0, 3);
+  const medicineNames = analysis.medicines.slice(0, 3).map((item) => item.name);
+
+  return normalizeText(
+    [
+      chooseLocalizedText(language, {
+        en: "Summary:",
+        hi: "Summary:",
+        hinglish: "Summary:",
+      }),
+      buildGroundedOverview(analysis, language),
+      "",
+      chooseLocalizedText(language, {
+        en: "Key findings:",
+        hi: "Key findings:",
+        hinglish: "Key findings:",
+      }),
+      abnormalValues.length > 0
+        ? abnormalValues.map((item) => `- ${formatAnalysisValue(item)} (${item.status})`).join("\n")
+        : analysis.testValues.length > 0
+          ? analysis.testValues.slice(0, 4).map((item) => `- ${formatAnalysisValue(item)} (${item.status})`).join("\n")
+          : chooseLocalizedText(language, {
+              en: "- No specific test value could be confidently extracted.",
+              hi: "- Koi specific test value confidently extract nahi ho saki.",
+              hinglish: "- Koi specific test value confidently extract nahi ho saki.",
+            }),
+      "",
+      chooseLocalizedText(language, {
+        en: "Abnormal values:",
+        hi: "Abnormal values:",
+        hinglish: "Abnormal values:",
+      }),
+      abnormalValues.length > 0
+        ? abnormalValues.map((item) => `- ${formatAnalysisValue(item)} (${item.status})`).join("\n")
+        : chooseLocalizedText(language, {
+            en: "- No clearly abnormal value was confidently identified from the OCR text.",
+            hi: "- OCR text se koi clearly abnormal value confidently identify nahi hui.",
+            hinglish: "- OCR text se koi clearly abnormal value confidently identify nahi hui.",
+          }),
+      "",
+      chooseLocalizedText(language, {
+        en: "Simple explanation:",
+        hi: "Simple explanation:",
+        hinglish: "Simple explanation:",
+      }),
+      chooseLocalizedText(language, {
+        en:
+          medicineNames.length > 0
+            ? `The scan shows report details along with medicines such as ${medicineNames.join(
+                ", "
+              )}. Please match these extracted details with the original report before taking action.`
+            : "This is a simple explanation of what was visible in the uploaded report scan. Please match the extracted details with the original report before taking action.",
+        hi:
+          medicineNames.length > 0
+            ? `Scan me report details ke saath ${medicineNames.join(
+                ", "
+              )} jaise medicines bhi dikh rahi hain. Koi action lene se pehle extracted details ko original report se match karein.`
+            : "Yeh uploaded report scan me jo clearly visible tha uski simple explanation hai. Koi action lene se pehle extracted details ko original report se match karein.",
+        hinglish:
+          medicineNames.length > 0
+            ? `Scan me report details ke saath ${medicineNames.join(
+                ", "
+              )} jaise medicines bhi dikh rahi hain. Koi action lene se pehle extracted details ko original report se match karein.`
+            : "Yeh uploaded report scan me jo clearly visible tha uski simple explanation hai. Koi action lene se pehle extracted details ko original report se match karein.",
+      }),
+    ].join("\n")
+  );
+}
+
+function applyMedicalAnalysisGuardrails(payload: {
+  analysis: MedicalAnalysis;
+  fallbackAnalysis: MedicalAnalysis;
+  primaryOcrText: string;
+  cleanedOcrText?: string;
+  structuredOcr?: OcrStructuredData | null;
+  evidenceBundle: AnalysisEvidenceBundle;
+  language: OutputLanguage;
+}) {
+  const structuredOcr = normalizeStructuredOcrData(payload.structuredOcr);
+  const evidenceText = buildAnalysisEvidenceSearchText([
+    payload.primaryOcrText,
+    payload.cleanedOcrText,
+    ...payload.evidenceBundle.importantLines,
+    JSON.stringify(structuredOcr),
+    JSON.stringify(payload.evidenceBundle.candidateMedicines),
+    JSON.stringify(payload.evidenceBundle.candidateTestValues),
+  ]);
+  const fallbackTestsByName = new Map(
+    payload.fallbackAnalysis.testValues.map((item) => [normalizeLookupKey(item.name), item] as const)
+  );
+  const fallbackMedicineNames = new Set(
+    payload.fallbackAnalysis.medicines.map((item) => normalizeLookupKey(item.name))
+  );
+  const fallbackConditionNames = new Set(
+    [
+      ...payload.fallbackAnalysis.possibleConditions.map((item) => item.name),
+      ...structuredOcr.possible_conditions,
+    ].map((item) => normalizeLookupKey(item))
+  );
+
+  const medicines = payload.analysis.medicines.filter((item) => {
+    const medicineKey = normalizeLookupKey(item.name);
+    return fallbackMedicineNames.has(medicineKey) || hasGroundedEvidence(item.name, evidenceText);
+  });
+
+  const testValues = payload.analysis.testValues.filter((item) => {
+    const fallback = fallbackTestsByName.get(normalizeLookupKey(item.name));
+    const nameGrounded = hasGroundedEvidence(item.name, evidenceText);
+    const valueGrounded =
+      hasGroundedEvidence(item.value, evidenceText) ||
+      hasGroundedEvidence(formatAnalysisValue(item), evidenceText);
+    const rangeGrounded = item.referenceRange
+      ? hasGroundedEvidence(item.referenceRange, evidenceText)
+      : false;
+    const fallbackAligned =
+      Boolean(fallback) &&
+      normalizeLookupKey(fallback?.value || "") === normalizeLookupKey(item.value || "");
+
+    return nameGrounded && (valueGrounded || rangeGrounded || fallbackAligned);
+  });
+
+  const possibleConditions = payload.analysis.possibleConditions.filter((item) => {
+    const conditionKey = normalizeLookupKey(item.name);
+    const evidenceGrounded = hasGroundedEvidence(item.evidence, evidenceText);
+    const testMentioned = testValues.some((test) =>
+      normalizeLookupKey(item.evidence).includes(normalizeLookupKey(test.name))
+    );
+
+    return (
+      fallbackConditionNames.has(conditionKey) ||
+      hasGroundedEvidence(item.name, evidenceText) ||
+      evidenceGrounded ||
+      testMentioned
+    );
+  });
+
+  const nextAnalysis: MedicalAnalysis = {
+    ...payload.analysis,
+    medicines,
+    testValues,
+    possibleConditions,
+  };
+  const shouldSynthesizeOverview =
+    !nextAnalysis.overview ||
+    nextAnalysis.overview.length < 24 ||
+    isLikelyAdministrativeNoise(nextAnalysis.overview);
+  const shouldSynthesizePlainLanguageSummary =
+    !nextAnalysis.plainLanguageSummary ||
+    nextAnalysis.plainLanguageSummary.length < 80 ||
+    /fallback parser|no plain-language explanation available/i.test(nextAnalysis.plainLanguageSummary);
+
+  return {
+    ...nextAnalysis,
+    overview: shouldSynthesizeOverview
+      ? buildGroundedOverview(nextAnalysis, payload.language)
+      : nextAnalysis.overview,
+    plainLanguageSummary: shouldSynthesizePlainLanguageSummary
+      ? buildGroundedPlainLanguageSummary(nextAnalysis, payload.language)
+      : nextAnalysis.plainLanguageSummary,
+  } satisfies MedicalAnalysis;
 }
 
 function buildChatSnapshot(payload: {
@@ -1142,43 +1401,6 @@ function normalizeAnalysis(
   };
 }
 
-function normalizeMedicalOcrCleanup(
-  payload: MedicalOcrCleanupPayload,
-  fallbackText: string
-): MedicalOcrCleanupPayload {
-  const heuristicText = buildHeuristicMedicalOcrText(fallbackText);
-
-  return {
-    cleanedText:
-      normalizeText(payload.cleanedText || "") || heuristicText || normalizeText(fallbackText),
-    medicines: uniqueNormalizedStrings(payload.medicines || []),
-    dosage: uniqueNormalizedStrings(payload.dosage || []),
-    instructions: uniqueNormalizedStrings(payload.instructions || []),
-    possible_conditions: uniqueNormalizedStrings(payload.possible_conditions || []),
-  };
-}
-
-function buildFallbackMedicalOcrCleanup(text: string): MedicalOcrCleanupPayload {
-  const fallbackAnalysis = generateFallbackMedicalAnalysis(text, "en");
-  const cleanedText = buildHeuristicMedicalOcrText(text);
-
-  return normalizeMedicalOcrCleanup(
-    {
-      cleanedText,
-      medicines: fallbackAnalysis.medicines.map((item) => item.name),
-      dosage: fallbackAnalysis.medicines.map((item) => item.dosage),
-      instructions: [
-        ...fallbackAnalysis.medicines.map((item) =>
-          [item.frequency, item.notes].filter(Boolean).join(" - ")
-        ),
-        ...fallbackAnalysis.precautions,
-      ],
-      possible_conditions: fallbackAnalysis.possibleConditions.map((item) => item.name),
-    },
-    text
-  );
-}
-
 function languageInstruction(language: OutputLanguage) {
   if (language === "hi") {
     return "Write every human-readable value in Hindi. Keep JSON keys, medicine names, and test status enums in English.";
@@ -1191,20 +1413,26 @@ function languageInstruction(language: OutputLanguage) {
   return "Write every human-readable value in English.";
 }
 
-function isOpenAiQuotaError(error: unknown) {
-  return isAiProviderQuotaError(error);
-}
-
-async function generateMedicalAnalysisWithGemini(
-  extractedText: string,
-  language: OutputLanguage
-) {
+async function generateMedicalAnalysisWithGemini(payload: {
+  extractedText: string;
+  rawText?: string;
+  structuredOcr?: OcrStructuredData | null;
+  ocrEngine?: string;
+  language: OutputLanguage;
+}) {
   if (!serverConfig.geminiApiKey) {
     throw new ApiError("Gemini API key is not configured.", 500);
   }
 
-  const fallbackAnalysis = generateFallbackMedicalAnalysis(extractedText, language);
-  const evidenceBundle = buildAnalysisEvidenceBundle(extractedText, fallbackAnalysis);
+  const primaryOcrText = trimForModel(normalizeText(payload.rawText || payload.extractedText), 30000);
+  const cleanedOcrText = trimForModel(normalizeText(payload.extractedText), 30000);
+  const sourceText = normalizeText([primaryOcrText, cleanedOcrText].filter(Boolean).join("\n\n"));
+  const fallbackAnalysis = generateFallbackMedicalAnalysis(primaryOcrText || cleanedOcrText, payload.language);
+  const evidenceBundle = buildAnalysisEvidenceBundle(
+    sourceText || primaryOcrText || cleanedOcrText,
+    fallbackAnalysis,
+    payload.structuredOcr
+  );
 
   const response = await fetch(
     `https://generativelanguage.googleapis.com/v1beta/models/${serverConfig.geminiAnalysisModel}:generateContent`,
@@ -1219,12 +1447,15 @@ async function generateMedicalAnalysisWithGemini(
           {
             parts: [
               {
-                text: `${buildMedicalAnalysisPrompt(language)} Return strict JSON matching the provided schema.`,
+                text: `${buildMedicalAnalysisPrompt(payload.language)} Return strict JSON matching the provided schema.`,
               },
               {
                 text: buildMedicalAnalysisUserMessage({
-                  extractedText,
+                  primaryOcrText,
+                  cleanedOcrText,
                   evidenceBundle,
+                  structuredOcr: payload.structuredOcr,
+                  ocrEngine: payload.ocrEngine,
                 }),
               },
             ],
@@ -1262,132 +1493,18 @@ async function generateMedicalAnalysisWithGemini(
     throw new Error("Gemini returned an invalid analysis payload.");
   }
 
-  return normalizeAnalysis(parsed, fallbackAnalysis);
+  return applyMedicalAnalysisGuardrails({
+    analysis: normalizeAnalysis(parsed, fallbackAnalysis),
+    fallbackAnalysis,
+    primaryOcrText,
+    cleanedOcrText,
+    structuredOcr: payload.structuredOcr,
+    evidenceBundle,
+    language: payload.language,
+  });
 }
 
-export async function extractTextWithGemini(payload: {
-  buffer: Buffer;
-  filename: string;
-  mimeType: string;
-}) {
-  if (!serverConfig.geminiApiKey) {
-    throw new ApiError("Gemini API key is not configured.", 500);
-  }
 
-  const response = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/${serverConfig.geminiAnalysisModel}:generateContent`,
-    {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "x-goog-api-key": serverConfig.geminiApiKey,
-      },
-      body: JSON.stringify({
-        contents: [
-          {
-            parts: [
-              {
-                text:
-                  "Extract all readable text from this medical document. Preserve headings, table labels, row order, values, units, dates, medicine names, and short line breaks whenever they help keep results aligned. Do not summarize.",
-              },
-              {
-                inlineData: {
-                  mimeType: payload.mimeType,
-                  data: payload.buffer.toString("base64"),
-                },
-              },
-            ],
-          },
-        ],
-      }),
-    }
-  );
-
-  const data = (await response.json().catch(() => null)) as
-    | {
-        candidates?: Array<{
-          content?: {
-            parts?: Array<{
-              text?: string;
-            }>;
-          };
-        }>;
-        error?: { message?: string };
-      }
-    | null;
-
-  if (!response.ok) {
-    throw new Error(data?.error?.message || "Gemini OCR request failed.");
-  }
-
-  return normalizeText(
-    data?.candidates?.[0]?.content?.parts?.map((part) => part.text || "").join("") || ""
-  );
-}
-
-async function cleanMedicalOcrTextWithGemini(payload: {
-  extractedText: string;
-}) {
-  if (!serverConfig.geminiApiKey) {
-    throw new ApiError("Gemini API key is not configured.", 500);
-  }
-
-  const response = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/${serverConfig.geminiAnalysisModel}:generateContent`,
-    {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "x-goog-api-key": serverConfig.geminiApiKey,
-      },
-      body: JSON.stringify({
-        contents: [
-          {
-            parts: [
-              {
-                text:
-                  "Clean this OCR text from a medical document. Correct only high-confidence OCR mistakes in medicine names, units, dates, and common medical terms. Remove obvious administrative noise such as repeated branding, phone numbers, and address fragments when they are not clinically relevant. Preserve clinically meaningful line order and keep values exactly as written whenever possible. Do not invent missing facts. Return strict JSON with cleanedText, medicines, dosage, instructions, and possible_conditions.",
-              },
-              {
-                text: payload.extractedText,
-              },
-            ],
-          },
-        ],
-        generationConfig: {
-          responseMimeType: "application/json",
-          responseJsonSchema: medicalOcrCleanupSchema,
-        },
-      }),
-    }
-  );
-
-  const data = (await response.json().catch(() => null)) as
-    | {
-        candidates?: Array<{
-          content?: {
-            parts?: Array<{
-              text?: string;
-            }>;
-          };
-        }>;
-        error?: { message?: string };
-      }
-    | null;
-
-  if (!response.ok) {
-    throw new Error(data?.error?.message || "Gemini OCR cleanup request failed.");
-  }
-
-  const text = data?.candidates?.[0]?.content?.parts?.map((part) => part.text || "").join("") || "";
-  const parsed = safeJsonParse<MedicalOcrCleanupPayload>(text);
-
-  if (!parsed) {
-    throw new Error("Gemini returned an invalid OCR cleanup payload.");
-  }
-
-  return normalizeMedicalOcrCleanup(parsed, payload.extractedText);
-}
 
 function trimForModel(text: string, maxChars: number) {
   const normalized = text.replace(/\r\n/g, "\n").trim();
@@ -1402,187 +1519,36 @@ function trimForModel(text: string, maxChars: number) {
   return `${head}\n\n[truncated]\n\n${tail}`;
 }
 
-export async function extractTextWithOpenAI(payload: {
-  buffer: Buffer;
-  filename: string;
-  mimeType: string;
-}) {
-  const file = await openai.files.create({
-    file: await toFile(payload.buffer, payload.filename, { type: payload.mimeType }),
-    purpose: payload.mimeType === "application/pdf" ? "user_data" : "vision",
-  });
 
-  try {
-    const response = await openai.responses.create({
-      model: serverConfig.openAiOcrModel,
-      store: false,
-      input: [
-        {
-          role: "user",
-          content: [
-            {
-              type: "input_text",
-                text:
-                  "Extract all readable text from this medical document. Preserve headings, table labels, row order, values, units, dates, medicine names, and short line breaks whenever they help keep results aligned. Do not summarize.",
-            },
-            payload.mimeType === "application/pdf"
-              ? {
-                  type: "input_file",
-                  file_id: file.id,
-                }
-              : {
-                  type: "input_image",
-                  file_id: file.id,
-                  detail: "high",
-                },
-          ],
-        },
-      ],
-    });
-
-    return normalizeText(response.output_text || "");
-  } finally {
-    await openai.files.delete(file.id).catch(() => undefined);
-  }
-}
-
-async function cleanMedicalOcrTextWithOpenAI(payload: {
-  extractedText: string;
-  userId?: string;
-}) {
-  const completion = await openai.chat.completions.create({
-    model: serverConfig.openAiAnalysisModel,
-    temperature: 0.1,
-    store: false,
-    safety_identifier: safetyIdentifier(payload.userId),
-    response_format: {
-      type: "json_schema",
-      json_schema: {
-        name: "medical_ocr_cleanup",
-        strict: true,
-        schema: medicalOcrCleanupSchema,
-      },
-    },
-    messages: [
-        {
-          role: "developer",
-          content:
-          "You clean OCR text from medical documents. Correct only high-confidence OCR mistakes in medicine names, units, dates, and common medical terms. Remove obvious address, branding, and contact-information noise when it is not clinically relevant. Keep clinically relevant wording and preserve values exactly as written whenever possible. Do not invent missing facts. Return JSON only.",
-        },
-      {
-        role: "user",
-        content: `Clean and structure this OCR text.\n\nOCR TEXT:\n${payload.extractedText}`,
-      },
-    ],
-  });
-
-  const content = completion.choices[0]?.message?.content || "";
-  const parsed = safeJsonParse<MedicalOcrCleanupPayload>(content);
-
-  if (!parsed) {
-    throw new Error("OpenAI returned an invalid OCR cleanup payload.");
-  }
-
-  return normalizeMedicalOcrCleanup(parsed, payload.extractedText);
-}
-
-export async function cleanAndStructureMedicalOcrText(payload: {
-  extractedText: string;
-  userId?: string;
-}): Promise<Pick<OcrResult, "text" | "rawText" | "structured" | "warnings"> & { engine: string }> {
-  const extractedText = trimForModel(normalizeText(payload.extractedText), 25000);
-
-  if (!extractedText) {
-    const fallback = buildFallbackMedicalOcrCleanup("");
-    return {
-      text: "",
-      rawText: "",
-      structured: fallback,
-      warnings: ["OCR cleanup received empty text and returned a heuristic fallback."],
-      engine: "heuristic-medical-cleanup",
-    };
-  }
-
-  try {
-    const cleaned = await cleanMedicalOcrTextWithOpenAI({
-      extractedText,
-      userId: payload.userId,
-    });
-
-    return {
-      text: cleaned.cleanedText,
-      rawText: extractedText,
-      structured: {
-        medicines: cleaned.medicines,
-        dosage: cleaned.dosage,
-        instructions: cleaned.instructions,
-        possible_conditions: cleaned.possible_conditions,
-      },
-      engine: "openai-medical-cleanup",
-    };
-  } catch (error) {
-    try {
-      const cleaned = await cleanMedicalOcrTextWithGemini({
-        extractedText,
-      });
-
-      return {
-        text: cleaned.cleanedText,
-        rawText: extractedText,
-        structured: {
-          medicines: cleaned.medicines,
-          dosage: cleaned.dosage,
-          instructions: cleaned.instructions,
-          possible_conditions: cleaned.possible_conditions,
-        },
-        warnings: [
-          `OpenAI OCR cleanup failed: ${getErrorMessage(error, "OpenAI OCR cleanup unavailable.")}`,
-        ],
-        engine: "gemini-medical-cleanup",
-      };
-    } catch {
-      const fallback = buildFallbackMedicalOcrCleanup(extractedText);
-
-      return {
-        text: fallback.cleanedText,
-        rawText: extractedText,
-        structured: {
-          medicines: fallback.medicines,
-          dosage: fallback.dosage,
-          instructions: fallback.instructions,
-          possible_conditions: fallback.possible_conditions,
-        },
-        warnings: [
-          getErrorMessage(
-            error,
-            "AI OCR cleanup was unavailable, so a heuristic cleanup fallback was used."
-          ),
-        ],
-        engine: "heuristic-medical-cleanup",
-      };
-    }
-  }
-}
 
 export async function generateMedicalAnalysis(payload: {
   extractedText: string;
+  rawText?: string;
+  structuredOcr?: OcrStructuredData | null;
+  ocrEngine?: string;
   userId?: string;
   language?: OutputLanguage;
 }) {
-  const extractedText = trimForModel(payload.extractedText, 30000);
+  const extractedText = trimForModel(normalizeText(payload.extractedText), 30000);
+  const primaryOcrText = trimForModel(normalizeText(payload.rawText || payload.extractedText), 30000);
   const language = payload.language || "en";
 
-  if (!extractedText) {
+  if (!extractedText && !primaryOcrText) {
     throw new ApiError("No readable OCR text is available for analysis.", 422);
   }
 
-  const fallbackAnalysis = generateFallbackMedicalAnalysis(extractedText, language);
-  const evidenceBundle = buildAnalysisEvidenceBundle(extractedText, fallbackAnalysis);
+  const sourceText = normalizeText([primaryOcrText, extractedText].filter(Boolean).join("\n\n"));
+  const fallbackAnalysis = generateFallbackMedicalAnalysis(primaryOcrText || extractedText, language);
+  const evidenceBundle = buildAnalysisEvidenceBundle(
+    sourceText || primaryOcrText || extractedText,
+    fallbackAnalysis,
+    payload.structuredOcr
+  );
 
   try {
     const completion = await openai.chat.completions.create({
       model: serverConfig.openAiAnalysisModel,
-      temperature: 0.2,
+      temperature: 0.1,
       store: false,
       safety_identifier: safetyIdentifier(payload.userId),
       response_format: {
@@ -1601,8 +1567,11 @@ export async function generateMedicalAnalysis(payload: {
         {
           role: "user",
           content: buildMedicalAnalysisUserMessage({
-            extractedText,
+            primaryOcrText,
+            cleanedOcrText: extractedText,
             evidenceBundle,
+            structuredOcr: payload.structuredOcr,
+            ocrEngine: payload.ocrEngine,
           }),
         },
       ],
@@ -1615,16 +1584,34 @@ export async function generateMedicalAnalysis(payload: {
       throw new Error("OpenAI returned an invalid analysis payload.");
     }
 
-    return normalizeAnalysis(parsed, fallbackAnalysis);
-  } catch (error) {
-    if (!isOpenAiQuotaError(error)) {
-      throw error;
-    }
-
+    return applyMedicalAnalysisGuardrails({
+      analysis: normalizeAnalysis(parsed, fallbackAnalysis),
+      fallbackAnalysis,
+      primaryOcrText,
+      cleanedOcrText: extractedText,
+      structuredOcr: payload.structuredOcr,
+      evidenceBundle,
+      language,
+    });
+  } catch {
     try {
-      return await generateMedicalAnalysisWithGemini(extractedText, language);
+      return await generateMedicalAnalysisWithGemini({
+        extractedText,
+        rawText: primaryOcrText,
+        structuredOcr: payload.structuredOcr,
+        ocrEngine: payload.ocrEngine,
+        language,
+      });
     } catch {
-      return generateFallbackMedicalAnalysis(extractedText, language);
+      return applyMedicalAnalysisGuardrails({
+        analysis: generateFallbackMedicalAnalysis(primaryOcrText || extractedText, language),
+        fallbackAnalysis,
+        primaryOcrText,
+        cleanedOcrText: extractedText,
+        structuredOcr: payload.structuredOcr,
+        evidenceBundle,
+        language,
+      });
     }
   }
 }

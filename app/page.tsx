@@ -34,13 +34,13 @@ const features = [
 
 const steps = [
   { num: "01", emoji: "📤", label: "Upload",      desc: "Prescription or lab report — PDF, photo, or scan accepted." },
-  { num: "02", emoji: "👁️", label: "OCR Reads",   desc: "Google Vision extracts every character with 98.4% accuracy." },
+  { num: "02", emoji: "👁️", label: "OCR Reads",   desc: "Tesseract OCR extracts report text using grayscale, contrast tuning, and sharpening." },
   { num: "03", emoji: "🧬", label: "NLP Decodes", desc: "Complex medical terms converted to plain language instantly." },
   { num: "04", emoji: "⚡", label: "Act on It",   desc: "Interactions, risks, diet, referrals — all in under 2 seconds." },
 ];
 
 const stats = [
-  { n: "98.4", u: "%",   l: "OCR Accuracy" },
+  { n: "OCR",  u: "",    l: "Tesseract Powered" },
   { n: "500+", u: "",    l: "Interactions Checked" },
   { n: "<2",   u: "s",   l: "Analysis Time" },
   { n: "3",    u: "",    l: "Languages" },

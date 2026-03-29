@@ -55,6 +55,8 @@ export async function ensureReportOcr(
       report: existingReport,
       ocr: {
         text: existingReport.ocr_text,
+        rawText: existingReport.ocr_raw_text || existingReport.ocr_text,
+        structured: existingReport.ocr_structured || undefined,
         engine: existingReport.ocr_engine || "unknown",
         confidence: "medium",
       },
@@ -107,6 +109,8 @@ export async function ensureReportAnalysis(
         report,
         ocr: {
           text: report.ocr_text,
+          rawText: report.ocr_raw_text || report.ocr_text,
+          structured: report.ocr_structured || undefined,
           engine: report.ocr_engine || "unknown",
           confidence: "medium" as const,
         },
@@ -133,6 +137,9 @@ export async function ensureReportAnalysis(
   try {
     const analysis = await generateMedicalAnalysis({
       extractedText: ocrState.ocr.text,
+      rawText: ocrState.ocr.rawText,
+      structuredOcr: ocrState.ocr.structured,
+      ocrEngine: ocrState.ocr.engine,
       userId,
       language: language || report.insights_json?.preferredLanguage || "en",
     });
