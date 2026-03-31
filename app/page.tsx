@@ -3,7 +3,15 @@
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
+import BrandWordmark from "@/components/BrandWordmark";
+import MedScanChrome from "@/components/MedScanChrome";
 import type { FeatureModuleKey } from "@/lib/feature-modules";
+import {
+  GUEST_PREVIEW_LIMIT_STORAGE_KEY,
+  type GuestReportPreview,
+  type GuestReportPreviewResponse,
+} from "@/lib/guest-preview";
+import { getBrowserSupabaseClient } from "@/lib/supabase";
 import {
   THEME_CHANGE_EVENT,
   THEME_STORAGE_KEY,
@@ -47,6 +55,39 @@ const stats = [
   { n: "10K+", u: "",    l: "Reports Analyzed" },
 ];
 
+const supabase = getBrowserSupabaseClient();
+const LANDING_ALLOWED_MIME_TYPES = new Set([
+  "application/pdf",
+  "image/jpeg",
+  "image/jpg",
+  "image/png",
+]);
+const LANDING_ALLOWED_FILE_PATTERN = /\.(pdf|png|jpe?g)$/i;
+
+function isSupportedLandingFile(file: File) {
+  const normalizedType = file.type.toLowerCase();
+
+  if (normalizedType) {
+    return LANDING_ALLOWED_MIME_TYPES.has(normalizedType);
+  }
+
+  return LANDING_ALLOWED_FILE_PATTERN.test(file.name);
+}
+
+function getApiErrorMessage(payload: unknown, fallback: string) {
+  if (
+    payload &&
+    typeof payload === "object" &&
+    "error" in payload &&
+    typeof payload.error === "string" &&
+    payload.error.trim()
+  ) {
+    return payload.error;
+  }
+
+  return fallback;
+}
+
 export default function Home() {
   const router = useRouter();
   const [file, setFile]         = useState<File | null>(null);
@@ -54,6 +95,12 @@ export default function Home() {
   const [lang, setLang]         = useState<"en" | "hi" | "hinglish">("en");
   const [dark, setDark]         = useState(true);
   const [tick, setTick]         = useState(0);
+  const [authChecked, setAuthChecked] = useState(false);
+  const [hasSession, setHasSession] = useState(false);
+  const [freePreviewUsed, setFreePreviewUsed] = useState(false);
+  const [guestPreview, setGuestPreview] = useState<GuestReportPreview | null>(null);
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const [previewError, setPreviewError] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -92,10 +139,184 @@ export default function Home() {
     };
   }, []);
 
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    setFreePreviewUsed(window.localStorage.getItem(GUEST_PREVIEW_LIMIT_STORAGE_KEY) === "1");
+  }, []);
+
+  useEffect(() => {
+    let active = true;
+
+    supabase.auth.getSession().then(({ data }) => {
+      if (!active) {
+        return;
+      }
+
+      setHasSession(Boolean(data.session));
+      setAuthChecked(true);
+    });
+
+    const { data: subscription } = supabase.auth.onAuthStateChange((_event, nextSession) => {
+      if (!active) {
+        return;
+      }
+
+      setHasSession(Boolean(nextSession));
+      setAuthChecked(true);
+    });
+
+    return () => {
+      active = false;
+      subscription.subscription.unsubscribe();
+    };
+  }, []);
+
+  const rememberFreePreviewUsage = () => {
+    setFreePreviewUsed(true);
+
+    if (typeof window !== "undefined") {
+      window.localStorage.setItem(GUEST_PREVIEW_LIMIT_STORAGE_KEY, "1");
+    }
+  };
+
+  const clearSelectedFile = () => {
+    setFile(null);
+
+    if (fileRef.current) {
+      fileRef.current.value = "";
+    }
+  };
+
+  const goToWorkspace = () => {
+    router.push("/workspace");
+  };
+
+  const openWorkspace = (mode: "login" | "signup") => {
+    router.push(mode === "login" ? "/login" : "/signup");
+  };
+
+  const selectLandingFile = (nextFile: File | null) => {
+    if (!nextFile) {
+      return;
+    }
+
+    if (!hasSession && freePreviewUsed) {
+      setPreviewError("Your free report preview is already used. Create an account or sign in to continue.");
+      clearSelectedFile();
+      return;
+    }
+
+    if (!isSupportedLandingFile(nextFile)) {
+      setPreviewError("Please upload a PDF, PNG, or JPG file.");
+      clearSelectedFile();
+      return;
+    }
+
+    setPreviewError(null);
+    setGuestPreview(null);
+    setFile(nextFile);
+  };
+
+  const openUploadChooser = () => {
+    if (hasSession) {
+      goToWorkspace();
+      return;
+    }
+
+    if (freePreviewUsed) {
+      setPreviewError("Your free report preview is already used. Create an account or sign in to continue.");
+      return;
+    }
+
+    fileRef.current?.click();
+  };
+
   const handleDrop = (e: React.DragEvent) => {
     e.preventDefault();
     setDragging(false);
-    openWorkspace("signup");
+
+    const nextFile = e.dataTransfer.files?.[0] || null;
+
+    if (!nextFile) {
+      return;
+    }
+
+    selectLandingFile(nextFile);
+  };
+
+  const scrollToTop = (event?: React.MouseEvent<HTMLElement>) => {
+    event?.preventDefault();
+
+    if (typeof window !== "undefined") {
+      window.scrollTo({
+        top: 0,
+        behavior: "smooth",
+      });
+    }
+  };
+
+  const handleAnalyzeButtonClick = async () => {
+    if (hasSession) {
+      goToWorkspace();
+      return;
+    }
+
+    if (!file) {
+      if (freePreviewUsed) {
+        openWorkspace("signup");
+      } else {
+        openUploadChooser();
+      }
+
+      return;
+    }
+
+    if (freePreviewUsed) {
+      openWorkspace("signup");
+      return;
+    }
+
+    setPreviewLoading(true);
+    setPreviewError(null);
+
+    try {
+      const formData = new FormData();
+      formData.set("file", file);
+      formData.set("language", lang);
+
+      const response = await fetch("/api/guest-report-preview", {
+        method: "POST",
+        body: formData,
+      });
+      const payload = await response.json().catch(() => null);
+
+      if (!response.ok) {
+        if (response.status === 403) {
+          rememberFreePreviewUsage();
+        }
+
+        throw new Error(getApiErrorMessage(payload, "Unable to analyze this report right now."));
+      }
+
+      const previewResponse = payload as GuestReportPreviewResponse | null;
+      const preview = previewResponse?.preview || null;
+
+      if (!preview) {
+        throw new Error("Report preview data was not returned.");
+      }
+
+      setGuestPreview(preview);
+      rememberFreePreviewUsage();
+    } catch (error) {
+      setPreviewError(
+        error instanceof Error ? error.message : "Unable to analyze this report right now."
+      );
+    } finally {
+      setPreviewLoading(false);
+    }
   };
 
   const handleFeatureActivation = () => {
@@ -113,25 +334,6 @@ export default function Home() {
     });
   };
 
-  const openWorkspace = (mode: "login" | "signup") => {
-    router.push(mode === "login" ? "/login" : "/signup");
-  };
-
-  const scrollToTop = (event: React.MouseEvent<HTMLAnchorElement>) => {
-    event.preventDefault();
-
-    if (typeof window !== "undefined") {
-      window.scrollTo({
-        top: 0,
-        behavior: "smooth",
-      });
-    }
-  };
-
-  const handleAnalyzeButtonClick = () => {
-    openWorkspace("signup");
-  };
-
   const toggleTheme = () => {
     const nextTheme = dark ? "light" : "dark";
     setThemePreference(nextTheme);
@@ -139,6 +341,44 @@ export default function Home() {
   };
 
   const ecgOffset = -(tick * 1.5) % 400;
+  const signedIn = authChecked && hasSession;
+  const guestPreviewLocked = !signedIn && freePreviewUsed;
+  const uploadHeading = signedIn
+    ? "Welcome Back To Your Workspace."
+    : guestPreviewLocked
+      ? "Create An Account To Keep Going."
+      : "Upload Your First Report Free.";
+  const uploadSubheading = signedIn
+    ? "You are already signed in. Open your private workspace for saved uploads, OCR, assistant chat, and full report history."
+    : guestPreviewLocked
+      ? "Your free preview is complete. Create an account to save reports, unlock more uploads, and continue with secure analysis."
+      : "Try one report without creating an account. After your first preview, create an account to continue uploading and keep everything securely saved.";
+  const dropTitle = file
+    ? file.name
+    : signedIn
+      ? "Open your workspace to upload and save reports"
+      : guestPreviewLocked
+        ? "Your free upload is complete"
+        : "Drop one PDF, PNG, or JPG report here";
+  const dropSubtitle = file
+    ? signedIn
+      ? "You are signed in. Continue in your workspace to analyze and save this report."
+      : `${(file.size / 1024).toFixed(0)} KB - analyse this first report for free, then create an account to continue.`
+    : signedIn
+      ? "Use the workspace uploader for full report analysis, saved history, and follow-up assistant answers."
+      : guestPreviewLocked
+        ? "Sign up or sign in to unlock your next report upload and keep your analysis history private."
+        : "No signup required for the first upload. Results are grounded in OCR-extracted report data only.";
+  const analyzeButtonLabel = signedIn
+    ? "Open Workspace"
+    : previewLoading
+      ? "Analysing Report..."
+      : guestPreviewLocked
+        ? "Create Free Account"
+        : file
+          ? "Analyse First Report Free"
+          : "Choose Report";
+  const dropZoneClassName = `drop-zone${dragging ? " dragging" : ""}${signedIn ? " signed-in" : ""}${guestPreviewLocked ? " locked" : ""}`;
 
   return (
     <>
@@ -289,10 +529,16 @@ export default function Home() {
           transition: background 0.3s, border-color 0.3s;
         }
         .nav-logo {
-          display: flex; align-items: center; gap: 0.6rem;
+          display: flex; align-items: center; gap: 0.72rem;
           font-family: var(--font-serif);
           font-size: 1.3rem;
           color: var(--ink);
+          --brand-wordmark-base: var(--ink);
+          --brand-wordmark-accent: var(--accent);
+          --brand-wordmark-size: 1.3rem;
+          --brand-wordmark-weight: 400;
+          --brand-wordmark-letter-spacing: -0.03em;
+          --brand-wordmark-gap: 0.18rem;
           text-decoration: none;
           white-space: nowrap;
           flex-shrink: 0;
@@ -305,7 +551,6 @@ export default function Home() {
           box-shadow: 0 3px 12px rgba(3,105,161,0.35);
           flex-shrink: 0;
         }
-        .nav-logo em { font-style: normal; color: var(--accent); }
         .nav-links {
           display: flex; gap: 0.25rem; list-style: none;
           margin-left: 2.5rem;
@@ -643,6 +888,16 @@ export default function Home() {
         }
         .drop-zone:hover { border-color: var(--accent); background: var(--blue-lt); }
         .drop-zone.dragging { border-color: var(--accent2); background: var(--blue-lt); box-shadow: 0 0 0 6px rgba(3,105,161,0.08); }
+        .drop-zone.locked {
+          cursor: default;
+          border-style: solid;
+          background: var(--bg-subtle);
+        }
+        .drop-zone.locked:hover {
+          border-color: var(--border-med);
+          background: var(--bg-subtle);
+        }
+        .drop-zone.signed-in { border-style: solid; }
         .drop-icon-wrap {
           width: 72px; height: 72px; border-radius: 18px;
           background: var(--blue-lt);
@@ -713,6 +968,152 @@ export default function Home() {
           transition: transform 0.2s, box-shadow 0.2s;
         }
         .btn-analyze:hover { transform: translateY(-2px); box-shadow: 0 8px 28px rgba(3,105,161,0.4); }
+        .btn-analyze:disabled {
+          cursor: wait;
+          opacity: 0.72;
+          transform: none;
+          box-shadow: 0 4px 20px rgba(3,105,161,0.18);
+        }
+        .upload-inline-note {
+          margin-top: 1rem;
+          padding: 0.8rem 0.95rem;
+          border-radius: 12px;
+          background: var(--surface);
+          border: 1px solid var(--border);
+          color: var(--muted);
+          font-size: 0.84rem;
+          line-height: 1.6;
+        }
+        .upload-inline-actions {
+          display: flex;
+          gap: 0.75rem;
+          flex-wrap: wrap;
+          margin-top: 0.95rem;
+        }
+        .preview-card {
+          margin-top: 1.3rem;
+          background: var(--surface);
+          border: 1px solid var(--border);
+          border-radius: 18px;
+          box-shadow: var(--shadow-md);
+          overflow: hidden;
+        }
+        .preview-head {
+          padding: 1rem 1.25rem;
+          border-bottom: 1px solid var(--border);
+          background: var(--bg-subtle);
+          display: flex;
+          align-items: flex-start;
+          justify-content: space-between;
+          gap: 1rem;
+          flex-wrap: wrap;
+        }
+        .preview-eyebrow {
+          font-size: 0.72rem;
+          font-weight: 700;
+          letter-spacing: 1.6px;
+          text-transform: uppercase;
+          color: var(--accent);
+          margin-bottom: 0.4rem;
+        }
+        .preview-title {
+          font-family: var(--font-serif);
+          font-size: 1.3rem;
+          color: var(--ink);
+        }
+        .preview-meta {
+          font-size: 0.82rem;
+          color: var(--muted);
+          text-align: right;
+        }
+        .preview-summary {
+          padding: 1.1rem 1.25rem 0;
+          color: var(--ink2);
+          line-height: 1.75;
+          font-size: 0.95rem;
+        }
+        .preview-badges {
+          display: flex;
+          gap: 0.6rem;
+          flex-wrap: wrap;
+          padding: 0.9rem 1.25rem 0;
+        }
+        .preview-badge {
+          padding: 0.34rem 0.7rem;
+          border-radius: 999px;
+          background: var(--blue-lt);
+          border: 1px solid var(--blue-brd);
+          color: var(--accent);
+          font-size: 0.76rem;
+          font-weight: 700;
+          letter-spacing: 0.02em;
+        }
+        .preview-grid {
+          display: grid;
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+          gap: 1rem;
+          padding: 1rem 1.25rem 1.25rem;
+        }
+        .preview-panel {
+          border: 1px solid var(--border);
+          border-radius: 14px;
+          padding: 1rem;
+          background: color-mix(in srgb, var(--surface) 88%, var(--bg-subtle) 12%);
+        }
+        .preview-panel-title {
+          font-size: 0.8rem;
+          font-weight: 700;
+          letter-spacing: 1.1px;
+          text-transform: uppercase;
+          color: var(--muted2);
+          margin-bottom: 0.8rem;
+        }
+        .preview-list {
+          list-style: none;
+          display: grid;
+          gap: 0.8rem;
+        }
+        .preview-item {
+          display: grid;
+          gap: 0.2rem;
+        }
+        .preview-item strong {
+          color: var(--ink);
+          font-size: 0.92rem;
+          font-weight: 600;
+        }
+        .preview-item span,
+        .preview-item small {
+          color: var(--muted);
+          line-height: 1.55;
+        }
+        .preview-item small { font-size: 0.76rem; }
+        .preview-empty {
+          color: var(--muted);
+          font-size: 0.86rem;
+          line-height: 1.6;
+        }
+        .preview-gate {
+          border-top: 1px solid var(--border);
+          background: var(--bg-subtle);
+          padding: 1rem 1.25rem 1.15rem;
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 1rem;
+          flex-wrap: wrap;
+        }
+        .preview-gate-copy {
+          color: var(--muted);
+          font-size: 0.88rem;
+          line-height: 1.65;
+          max-width: 540px;
+        }
+        .preview-gate-actions {
+          display: flex;
+          gap: 0.75rem;
+          flex-wrap: wrap;
+        }
 
         /* HOW IT WORKS */
         .hiw-card {
@@ -960,8 +1361,17 @@ export default function Home() {
           justify-content: space-between; flex-wrap: wrap; gap: 1rem;
           border-top: 1px solid rgba(255,255,255,0.06);
         }
-        .f-logo { font-family: var(--font-serif); font-size: 1rem; color: rgba(255,255,255,0.7); }
-        .f-logo em { font-style: normal; color: #38bdf8; }
+        .f-logo {
+          display: inline-flex;
+          align-items: center;
+          color: #f0f6ff;
+          --brand-wordmark-base: #f0f6ff;
+          --brand-wordmark-accent: #38bdf8;
+          --brand-wordmark-size: 1.3rem;
+          --brand-wordmark-weight: 400;
+          --brand-wordmark-letter-spacing: -0.03em;
+          --brand-wordmark-gap: 0.18rem;
+        }
         footer p { color: rgba(255,255,255,0.25); font-size: 0.75rem; }
         .f-links { display: flex; gap: 1.5rem; }
         .f-links a { color: rgba(255,255,255,0.28); text-decoration: none; font-size: 0.75rem; transition: color 0.2s; }
@@ -1000,7 +1410,10 @@ export default function Home() {
             flex-wrap: wrap;
             gap: 0.75rem;
           }
-          .nav-logo { font-size: 1.12rem; }
+          .nav-logo {
+            font-size: 1.12rem;
+            --brand-wordmark-size: 1.12rem;
+          }
           .nav-right {
             width: 100%;
             margin-left: 0;
@@ -1046,6 +1459,7 @@ export default function Home() {
           .upload-section,
           .lab-section { padding: 3rem 1rem; gap: 2rem; }
           .drop-zone { padding: 2.25rem 1.1rem; }
+          .preview-grid { grid-template-columns: 1fr; }
           .drop-icon-wrap {
             width: 64px;
             height: 64px;
@@ -1135,31 +1549,29 @@ export default function Home() {
       `}</style>
 
       {/* ── GRID BG ── */}
-      <div className="hero-bg-grid" />
+      <MedScanChrome
+        dark={dark}
+        statusLabel="System Operational"
+        onToggleTheme={toggleTheme}
+        onBrandClick={scrollToTop}
+        navLinks={[
+          { label: "Access Flow", href: "#scan" },
+          { label: "Features", href: "#features" },
+          { label: "Lab Analysis", href: "#labs" },
+        ]}
+        secondaryAction={{
+          label: "Sign In",
+          variant: "outline",
+          onClick: () => openWorkspace("login"),
+        }}
+        primaryAction={{
+          label: "Get Started →",
+          variant: "solid",
+          onClick: () => openWorkspace("signup"),
+        }}
+      >
 
       {/* ────── NAV ────── */}
-      <nav className="nav">
-        <a href="#top" className="nav-logo" onClick={scrollToTop}>
-          <div className="nav-logo-mark">🩺</div>
-          Medi<em>Scan</em> AI
-        </a>
-        <ul className="nav-links">
-          <li><a href="#scan">Access Flow</a></li>
-          <li><a href="#features">Features</a></li>
-          <li><a href="#labs">Lab Analysis</a></li>
-        </ul>
-        <div className="nav-right">
-          <div className="status-pill">
-            <span className="pulse-dot" />
-            System Operational
-          </div>
-          <button className="btn btn-outline" onClick={() => openWorkspace("login")}>Sign In</button>
-          <button className="btn btn-solid" onClick={() => openWorkspace("signup")}>Get Started →</button>
-          <button className="theme-toggle" onClick={toggleTheme} title="Toggle theme" type="button">
-            {dark ? "☀️" : "🌙"}
-          </button>
-        </div>
-      </nav>
 
       {/* ────── HERO ────── */}
       <section className="hero">
@@ -1173,8 +1585,8 @@ export default function Home() {
           </h1>
           <p className="hero-sub">
             Learn how MediScan AI turns prescriptions and lab reports into clear, useful
-            guidance. Create an account, verify your email, and then continue in your
-            private workspace to analyze reports and store your own history.
+            guidance. Upload your first report free, then continue in your private
+            workspace to save history, use assistant chat, and unlock more uploads.
           </p>
           <div className="hero-ctas">
             <button className="btn-hero-primary" onClick={() => scrollToSection("scan")}>
@@ -1292,31 +1704,40 @@ export default function Home() {
       <div className="upload-section" id="scan">
         {/* left: drop zone */}
         <div>
-          <div className="section-eyebrow">Secure Access</div>
-          <h2 className="section-h">Create Your Account.<br />Unlock Your Workspace.</h2>
+          <div className="section-eyebrow">Free Preview</div>
+          <h2 className="section-h">{uploadHeading}</h2>
           <p className="section-sub">
-            MediScan AI keeps uploads, OCR, explanations, and chat history tied to the
-            verified user who is signed in.
+            {uploadSubheading}
           </p>
 
           <div style={{ marginTop: "2rem" }}>
             <div
-              className={`drop-zone${dragging ? " dragging" : ""}`}
+              className={dropZoneClassName}
               onDragOver={e => { e.preventDefault(); setDragging(true); }}
               onDragLeave={() => setDragging(false)}
               onDrop={handleDrop}
-              onClick={() => openWorkspace("signup")}
+              onClick={openUploadChooser}
               role="button" tabIndex={0}
-              onKeyDown={e => e.key === "Enter" && openWorkspace("signup")}
+              onKeyDown={e => {
+                if (e.key === "Enter" || e.key === " ") {
+                  e.preventDefault();
+                  openUploadChooser();
+                }
+              }}
             >
-              <input ref={fileRef} type="file" accept=".pdf,.png,.jpg,.jpeg,.webp"
-                style={{ display: "none" }} onChange={e => setFile(e.target.files?.[0] || null)} />
-              <div className="drop-icon-wrap">{file ? "✅" : "🔬"}</div>
-              <div className="drop-title">{file ? file.name : "Create an account to unlock secure report analysis"}</div>
-              <div className="drop-sub">{file ? `${(file.size / 1024).toFixed(0)} KB - continue in your workspace to analyze this report` : "Sign up, verify your email, and use your private dashboard for uploads and results."}</div>
+              <input
+                ref={fileRef}
+                type="file"
+                accept=".pdf,.png,.jpg,.jpeg"
+                style={{ display: "none" }}
+                onChange={e => selectLandingFile(e.target.files?.[0] || null)}
+              />
+              <div className="drop-icon-wrap">{file ? "✅" : guestPreviewLocked ? "🔒" : signedIn ? "📂" : "🔬"}</div>
+              <div className="drop-title">{dropTitle}</div>
+              <div className="drop-sub">{dropSubtitle}</div>
               {!file && (
                 <div className="fmt-chips">
-                  {["PDF", "PNG", "JPG", "WEBP"].map(f => <span key={f} className="fmt-chip">{f}</span>)}
+                  {["PDF", "PNG", "JPG"].map(f => <span key={f} className="fmt-chip">{f}</span>)}
                 </div>
               )}
             </div>
@@ -1324,7 +1745,17 @@ export default function Home() {
             {file && (
               <div className="file-selected">
                 📄 {file.name}
-                <button className="file-remove" onClick={e => { e.stopPropagation(); setFile(null); }}>×</button>
+                <button
+                  className="file-remove"
+                  onClick={e => {
+                    e.stopPropagation();
+                    clearSelectedFile();
+                    setGuestPreview(null);
+                    setPreviewError(null);
+                  }}
+                >
+                  ×
+                </button>
               </div>
             )}
 
@@ -1332,17 +1763,159 @@ export default function Home() {
               <div className="lang-label">Language preview</div>
               <div className="lang-btns">
                 {(["en", "hi", "hinglish"] as const).map(l => (
-                  <button key={l} data-lang={l} className={`lang-btn${lang === l ? " active" : ""}`} onClick={() => setLang(l)}>
+                  <button
+                    key={l}
+                    type="button"
+                    data-lang={l}
+                    className={`lang-btn${lang === l ? " active" : ""}`}
+                    onClick={() => setLang(l)}
+                  >
                     {l === "en" ? "🇬🇧 English" : l === "hi" ? "🇮🇳 Hindi" : "🤝 Hinglish"}
                   </button>
                 ))}
               </div>
             </div>
 
-            {file && (
-              <button className="btn-analyze" type="button" onClick={handleAnalyzeButtonClick}>
-                🧬 Analyse Report
-              </button>
+            <button
+              className="btn-analyze"
+              type="button"
+              onClick={handleAnalyzeButtonClick}
+              disabled={previewLoading}
+            >
+              {analyzeButtonLabel}
+            </button>
+
+            {previewError && (
+              <div className="upload-inline-note">
+                {previewError}
+              </div>
+            )}
+
+            {guestPreviewLocked && !guestPreview && (
+              <div className="upload-inline-note">
+                Create an account to unlock your next upload, save report history, and continue with secure assistant support.
+                <div className="upload-inline-actions">
+                  <button className="btn btn-solid" type="button" onClick={() => openWorkspace("signup")}>
+                    Create Free Account
+                  </button>
+                  <button className="btn btn-outline" type="button" onClick={() => openWorkspace("login")}>
+                    Sign In
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {guestPreview && (
+              <div className="preview-card">
+                <div className="preview-head">
+                  <div>
+                    <div className="preview-eyebrow">First Report Preview</div>
+                    <div className="preview-title">{guestPreview.filename}</div>
+                  </div>
+                  <div className="preview-meta">
+                    Based only on OCR-extracted report data
+                    <br />
+                    {new Date(guestPreview.createdAt).toLocaleString()}
+                  </div>
+                </div>
+                <div className="preview-summary">
+                  {guestPreview.analysis.plainLanguageSummary || guestPreview.insights.summary}
+                </div>
+                <div className="preview-badges">
+                  <span className="preview-badge">Risk: {guestPreview.insights.overallRisk.toUpperCase()}</span>
+                  <span className="preview-badge">
+                    Findings: {guestPreview.insights.abnormalFindings.length}
+                  </span>
+                  <span className="preview-badge">
+                    Medicines: {guestPreview.analysis.medicines.length}
+                  </span>
+                </div>
+                <div className="preview-grid">
+                  <div className="preview-panel">
+                    <div className="preview-panel-title">Key Findings</div>
+                    {guestPreview.insights.abnormalFindings.length ? (
+                      <ul className="preview-list">
+                        {guestPreview.insights.abnormalFindings.slice(0, 3).map((finding) => (
+                          <li key={`${finding.name}-${finding.value}`} className="preview-item">
+                            <strong>{finding.name}: {finding.value}</strong>
+                            <span>{finding.explanation}</span>
+                            <small>
+                              Reference: {finding.referenceRange} • Severity: {finding.severity}
+                            </small>
+                          </li>
+                        ))}
+                      </ul>
+                    ) : (
+                      <div className="preview-empty">
+                        No abnormal findings were highlighted in the extracted report data.
+                      </div>
+                    )}
+                  </div>
+                  <div className="preview-panel">
+                    <div className="preview-panel-title">Medicines In Report</div>
+                    {guestPreview.analysis.medicines.length ? (
+                      <ul className="preview-list">
+                        {guestPreview.analysis.medicines.slice(0, 3).map((medicine) => (
+                          <li key={`${medicine.name}-${medicine.dosage}-${medicine.frequency}`} className="preview-item">
+                            <strong>{medicine.name}</strong>
+                            <span>{medicine.dosage || "Dosage not clearly extracted"} • {medicine.frequency || "Schedule not clearly extracted"}</span>
+                            <small>{medicine.purpose || medicine.notes || "Purpose was not clearly extracted from the report."}</small>
+                          </li>
+                        ))}
+                      </ul>
+                    ) : (
+                      <div className="preview-empty">
+                        No medicines were confidently extracted from this report.
+                      </div>
+                    )}
+                  </div>
+                  <div className="preview-panel">
+                    <div className="preview-panel-title">Precautions</div>
+                    {guestPreview.analysis.precautions.length ? (
+                      <ul className="preview-list">
+                        {guestPreview.analysis.precautions.slice(0, 3).map((precaution) => (
+                          <li key={precaution} className="preview-item">
+                            <span>{precaution}</span>
+                          </li>
+                        ))}
+                      </ul>
+                    ) : (
+                      <div className="preview-empty">
+                        No specific precautions were generated from the extracted report data.
+                      </div>
+                    )}
+                  </div>
+                  <div className="preview-panel">
+                    <div className="preview-panel-title">Follow-Up Questions</div>
+                    {guestPreview.analysis.followUpQuestions.length ? (
+                      <ul className="preview-list">
+                        {guestPreview.analysis.followUpQuestions.slice(0, 3).map((question) => (
+                          <li key={question} className="preview-item">
+                            <span>{question}</span>
+                          </li>
+                        ))}
+                      </ul>
+                    ) : (
+                      <div className="preview-empty">
+                        No follow-up questions were generated for this report.
+                      </div>
+                    )}
+                  </div>
+                </div>
+                <div className="preview-gate">
+                  <div className="preview-gate-copy">
+                    This free preview is not saved to a private history. Create an account to unlock more uploads, keep report history, and continue with full workspace tools.
+                  </div>
+                  <div className="preview-gate-actions">
+                    <button className="btn btn-solid" type="button" onClick={() => openWorkspace("signup")}>
+                      Create Free Account
+                    </button>
+                    <button className="btn btn-outline" type="button" onClick={() => openWorkspace("login")}>
+                      Sign In
+                    </button>
+                  </div>
+                </div>
+              </div>
             )}
           </div>
         </div>
@@ -1486,7 +2059,9 @@ export default function Home() {
       {/* ────── FOOTER ────── */}
       <footer>
         <div>
-          <div className="f-logo">MediScan<em>AI</em></div>
+          <div className="f-logo">
+            <BrandWordmark />
+          </div>
           <p style={{ marginTop: "0.3rem" }}>AI-powered clinical intelligence for everyone.</p>
         </div>
         <div className="f-links">
@@ -1499,6 +2074,7 @@ export default function Home() {
           </a>
         </div>
       </footer>
+      </MedScanChrome>
 
     </>
   );

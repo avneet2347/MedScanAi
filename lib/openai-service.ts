@@ -2,7 +2,6 @@ import crypto from "node:crypto";
 import OpenAI from "openai";
 import {
   ApiError,
-  getErrorMessage,
   normalizeText,
   safeJsonParse,
 } from "@/lib/api-utils";
@@ -24,7 +23,6 @@ import type {
   MedicineEntry,
   OutputLanguage,
   OcrStructuredData,
-  OcrResult,
   ReportComparisonSummary,
   TestStatus,
   TestValueEntry,
@@ -384,6 +382,73 @@ const REPORT_CONTEXT_KEYWORDS = [
   "ocr",
 ];
 
+const COMMON_REWRITE_TOKENS = new Set([
+  "about",
+  "above",
+  "according",
+  "answer",
+  "answers",
+  "asked",
+  "assistant",
+  "based",
+  "below",
+  "care",
+  "cause",
+  "causes",
+  "clear",
+  "clearly",
+  "condition",
+  "conditions",
+  "context",
+  "current",
+  "data",
+  "details",
+  "direct",
+  "disclaimer",
+  "evidence",
+  "finding",
+  "findings",
+  "follow",
+  "general",
+  "guidance",
+  "help",
+  "helpful",
+  "history",
+  "include",
+  "information",
+  "issue",
+  "issues",
+  "limit",
+  "limitation",
+  "medical",
+  "medicine",
+  "medicines",
+  "mention",
+  "mentioned",
+  "possible",
+  "precaution",
+  "precautions",
+  "question",
+  "questions",
+  "related",
+  "relevant",
+  "report",
+  "reports",
+  "result",
+  "results",
+  "safety",
+  "shows",
+  "specific",
+  "structured",
+  "summary",
+  "support",
+  "symptom",
+  "symptoms",
+  "uploaded",
+  "value",
+  "values",
+]);
+
 function safetyIdentifier(userId?: string) {
   if (!userId) {
     return undefined;
@@ -466,40 +531,330 @@ function selectImportantMedicalLines(text: string, maxLines = 18) {
     .map((item) => item.line);
 }
 
+function extractNumericTokens(text: string) {
+  return Array.from(
+    new Set((normalizeText(text).match(/\b\d+(?:\.\d+)?(?:\/\d+(?:\.\d+)?)?\b/g) || []).map((item) => item.trim()))
+  );
+}
+
+function extractMeaningfulRewriteTokens(text: string) {
+  return Array.from(
+    new Set(
+      normalizeIntentText(text)
+        .split(" ")
+        .filter((token) => (token.length >= 5 || /\d/.test(token)) && !COMMON_REWRITE_TOKENS.has(token))
+    )
+  );
+}
+
+const REWRITE_LIMITATION_PATTERN =
+  /\b(?:not clearly|not available|could not|do not have enough|no clear|none clearly|no specific|not mentioned|not present|not enough)\b/i;
+
+function hasUnsupportedNumericTokens(candidate: string, sourceText: string) {
+  const sourceNumbers = new Set(extractNumericTokens(sourceText));
+  return extractNumericTokens(candidate).some((token) => !sourceNumbers.has(token));
+}
+
+function losesImportantLimitations(candidate: string, sourceText: string) {
+  const sourceHasLimitation = REWRITE_LIMITATION_PATTERN.test(sourceText);
+  const candidateHasLimitation = REWRITE_LIMITATION_PATTERN.test(candidate);
+
+  return (
+    sourceHasLimitation &&
+    !candidateHasLimitation &&
+    candidate.length > Math.max(140, Math.floor(sourceText.length * 0.4))
+  );
+}
+
+function normalizeHumanizedCandidate(value: string) {
+  return normalizeText(
+    value
+      .replace(/^(?:humanized|simplified|plain language|simple version|simpler explanation)\s*:\s*/i, "")
+      .replace(/^"(.*)"$/u, "$1")
+  );
+}
+
+function shouldAcceptConstrainedRewrite(payload: {
+  candidate: string;
+  sourceTexts: Array<string | null | undefined>;
+}) {
+  const candidate = normalizeText(payload.candidate || "");
+
+  if (!candidate) {
+    return false;
+  }
+
+  const sourceText = normalizeText(payload.sourceTexts.filter(Boolean).join("\n"));
+
+  if (!sourceText) {
+    return true;
+  }
+
+  if (hasUnsupportedNumericTokens(candidate, sourceText)) {
+    return false;
+  }
+
+  const candidateTokens = extractMeaningfulRewriteTokens(candidate);
+
+  if (candidateTokens.length > 0) {
+    const sourceTokens = new Set(extractMeaningfulRewriteTokens(sourceText));
+    const unmatchedTokens = candidateTokens.filter((token) => !sourceTokens.has(token));
+
+    if (candidateTokens.length >= 6 && unmatchedTokens.length / candidateTokens.length > 0.45) {
+      return false;
+    }
+  }
+
+  if (losesImportantLimitations(candidate, sourceText)) {
+    return false;
+  }
+
+  return true;
+}
+
+function shouldAcceptHumanizedRewrite(payload: {
+  candidate: string;
+  originalReply: string;
+  reportSnapshot?: string | null;
+}) {
+  const candidate = normalizeHumanizedCandidate(payload.candidate || "");
+  const originalReply = normalizeText(payload.originalReply || "");
+  const combinedSource = normalizeText([originalReply, payload.reportSnapshot || ""].filter(Boolean).join("\n"));
+
+  if (!candidate) {
+    return false;
+  }
+
+  if (!combinedSource) {
+    return true;
+  }
+
+  if (hasUnsupportedNumericTokens(candidate, combinedSource)) {
+    return false;
+  }
+
+  if (losesImportantLimitations(candidate, combinedSource)) {
+    return false;
+  }
+
+  const candidateTokens = extractMeaningfulRewriteTokens(candidate);
+  const sourceTokens = new Set(extractMeaningfulRewriteTokens(combinedSource));
+  const originalTokens = new Set(extractMeaningfulRewriteTokens(originalReply));
+
+  if (candidateTokens.length >= 6 && originalTokens.size > 0) {
+    const sharedOriginalTokens = candidateTokens.filter((token) => originalTokens.has(token));
+
+    if (sharedOriginalTokens.length === 0) {
+      return false;
+    }
+  }
+
+  if (candidateTokens.length >= 10 && sourceTokens.size > 0) {
+    const unmatchedTokens = candidateTokens.filter((token) => !sourceTokens.has(token));
+
+    if (unmatchedTokens.length / candidateTokens.length > 0.72) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+function collectReportPrecautions(currentReport: ChatReportContext) {
+  return uniqueNormalizedStrings([
+    ...(currentReport.analysis?.precautions || []),
+    ...(currentReport.insights?.generalGuidance || []),
+    ...((currentReport.insights?.alerts || []).map((item) => item.recommendation) || []),
+    currentReport.insights?.emergencyAssessment?.action || "",
+  ]).slice(0, 5);
+}
+
+function findMatchedSymptomTerms(question: string) {
+  const normalizedQuestion = normalizeIntentText(question);
+
+  return dedupeByKey(
+    SYMPTOM_KEYWORDS.filter((keyword) => includesIntentTerm(normalizedQuestion, keyword)),
+    (keyword) => normalizeIntentText(keyword)
+  ).slice(0, 4);
+}
+
+function buildQuestionEvidenceTerms(question: string, currentReport: ChatReportContext) {
+  const normalizedQuestion = normalizeIntentText(question);
+  const significantQuestionTokens = normalizedQuestion
+    .split(" ")
+    .filter((token) => token.length >= 4 && !COMMON_REWRITE_TOKENS.has(token))
+    .slice(0, 8);
+  const candidateReportTerms = [
+    ...(currentReport.analysis?.testValues || []).map((item) => item.name),
+    ...(currentReport.analysis?.medicines || []).map((item) => item.name),
+    ...(currentReport.analysis?.possibleConditions || []).map((item) => item.name),
+    ...(currentReport.insights?.abnormalFindings || []).map((item) => item.name),
+    ...(currentReport.insights?.medicineDetails || []).map((item) => item.name),
+  ].filter((item) => {
+    const normalizedItem = normalizeIntentText(item || "");
+    return Boolean(
+      normalizedItem &&
+        (normalizedQuestion.includes(normalizedItem) ||
+          normalizedItem.includes(normalizedQuestion) ||
+          significantQuestionTokens.some((token) => normalizedItem.includes(token)))
+    );
+  });
+
+  return uniqueNormalizedStrings([
+    ...findMatchedSymptomTerms(question),
+    ...significantQuestionTokens,
+    ...candidateReportTerms,
+  ]).slice(0, 12);
+}
+
+function selectRelevantReportEvidenceLines(
+  question: string,
+  currentReport: ChatReportContext,
+  maxLines = 4
+) {
+  const terms = buildQuestionEvidenceTerms(question, currentReport);
+
+  if (terms.length === 0) {
+    return [];
+  }
+
+  const candidateLines = dedupeByKey(
+    [
+      ...selectImportantMedicalLines(currentReport.ocrText || "", 24),
+      currentReport.analysis?.overview || "",
+      currentReport.analysis?.plainLanguageSummary || "",
+      currentReport.insights?.summary || "",
+      ...(currentReport.analysis?.possibleConditions || []).map(
+        (item) => `${item.name}: ${item.evidence || item.explanation}`
+      ),
+      ...(currentReport.analysis?.medicines || []).map((item) =>
+        `${item.name}: ${item.purpose || item.notes || [item.dosage, item.frequency].filter(Boolean).join(", ")}`
+      ),
+      ...(currentReport.analysis?.precautions || []),
+      ...(currentReport.insights?.generalGuidance || []),
+      ...((currentReport.insights?.alerts || []).map(
+        (item) => `${item.title}: ${item.recommendation}`
+      ) || []),
+    ]
+      .map((line) => normalizeText(line || ""))
+      .filter(Boolean),
+    (line) => normalizeLookupKey(line)
+  );
+
+  return candidateLines
+    .map((line, index) => {
+      const normalizedLine = normalizeIntentText(line);
+      let score = 0;
+
+      for (const term of terms) {
+        const normalizedTerm = normalizeIntentText(term);
+
+        if (!normalizedTerm) {
+          continue;
+        }
+
+        if (` ${normalizedLine} `.includes(` ${normalizedTerm} `)) {
+          score += normalizedTerm.split(" ").length > 1 ? 3 : 2;
+        } else if (normalizedLine.includes(normalizedTerm)) {
+          score += 1;
+        }
+      }
+
+      if (scoreMedicalLine(line) >= 2) {
+        score += 1;
+      }
+
+      return {
+        line,
+        index,
+        score,
+      };
+    })
+    .filter((item) => item.score > 0 && !isLikelyAdministrativeNoise(item.line))
+    .sort((left, right) => right.score - left.score || left.index - right.index)
+    .slice(0, maxLines)
+    .map((item) => item.line);
+}
+
+function buildReportScopedSymptomFallbackReply(payload: {
+  question: string;
+  language: OutputLanguage;
+  currentReport: ChatReportContext;
+  reportReply: string;
+  includeReportAnswer?: boolean;
+}) {
+  const matchedSymptoms = findMatchedSymptomTerms(payload.question);
+  const symptomLabel =
+    matchedSymptoms.slice(0, 2).join(" / ") ||
+    chooseLocalizedText(payload.language, {
+      en: "the symptom you asked about",
+      hi: "aapke pooche gaye symptom",
+      hinglish: "aapke pooche gaye symptom",
+    });
+  const evidenceLines = selectRelevantReportEvidenceLines(payload.question, payload.currentReport, 4);
+  const precautions = collectReportPrecautions(payload.currentReport);
+  const baseReply =
+    normalizeText(payload.reportReply || "") ||
+    chooseLocalizedText(payload.language, {
+      en: "No clear answer could be derived from the extracted report data.",
+      hi: "Extracted report data se koi clear answer derive nahi ho saka.",
+      hinglish: "Extracted report data se koi clear answer derive nahi ho saka.",
+    });
+  const reportMentionSummary =
+    evidenceLines.length > 0
+      ? chooseLocalizedText(payload.language, {
+          en: `I found extracted report information that may relate to ${symptomLabel}.`,
+          hi: `Mujhe extracted report data me ${symptomLabel} se related kuch information mili.`,
+          hinglish: `Mujhe extracted report data me ${symptomLabel} se related kuch information mili.`,
+        })
+      : chooseLocalizedText(payload.language, {
+          en: `The extracted report does not clearly mention ${symptomLabel}, so the answer is limited to findings and guidance already present in the report.`,
+          hi: `Extracted report me ${symptomLabel} clearly mention nahi hai, isliye answer sirf report me already present findings aur guidance tak limited hai.`,
+          hinglish:
+            `Extracted report me ${symptomLabel} clearly mention nahi hai, isliye answer sirf report me already present findings aur guidance tak limited hai.`,
+        });
+  const noEvidenceText = chooseLocalizedText(payload.language, {
+    en: "No direct OCR or structured report line clearly addressed this symptom question.",
+    hi: "Koi direct OCR ya structured report line is symptom question ko clearly address nahi karti.",
+    hinglish: "Koi direct OCR ya structured report line is symptom question ko clearly address nahi karti.",
+  });
+  const noPrecautionsText = chooseLocalizedText(payload.language, {
+    en: "No symptom-specific precaution was clearly extracted from the report.",
+    hi: "Report se koi symptom-specific precaution clearly extract nahi hui.",
+    hinglish: "Report se koi symptom-specific precaution clearly extract nahi hui.",
+  });
+
+  return normalizeText(
+    [
+      `${chooseLocalizedText(payload.language, {
+        en: "Report-based answer",
+        hi: "Report-based answer",
+        hinglish: "Report-based answer",
+      })}:`,
+      reportMentionSummary,
+      payload.includeReportAnswer === false ? "" : baseReply,
+      "",
+      `${chooseLocalizedText(payload.language, {
+        en: "Relevant extracted evidence",
+        hi: "Relevant extracted evidence",
+        hinglish: "Relevant extracted evidence",
+      })}:`,
+      evidenceLines.length ? evidenceLines.map((item) => `- ${item}`).join("\n") : `- ${noEvidenceText}`,
+      "",
+      `${chooseLocalizedText(payload.language, {
+        en: "Precautions from report data",
+        hi: "Precautions from report data",
+        hinglish: "Precautions from report data",
+      })}:`,
+      precautions.length ? precautions.map((item) => `- ${item}`).join("\n") : `- ${noPrecautionsText}`,
+    ].join("\n")
+  );
+}
+
 const ADMINISTRATIVE_NOISE_PATTERNS = [
   /\b(?:address|road|street|near|phone|mobile|whatsapp|email|website|timing|hours|available|branch)\b/i,
   /\b(?:hospital|clinic|diagnostic|centre|center|laboratory|lab)\b/i,
 ];
-
-const MEDICAL_OCR_NORMALIZATION_RULES: Array<[RegExp, string]> = [
-  [/\bmgi?d[li]\b/gi, "mg/dL"],
-  [/\bg[li]\/d[li]\b/gi, "g/dL"],
-  [/\bmiu\s*\/?\s*l\b/gi, "mIU/L"],
-  [/\bng\s*\/?\s*ml\b/gi, "ng/mL"],
-  [/\bmmh[gq]\b/gi, "mmHg"],
-  [/\bmcg\b/gi, "mcg"],
-  [/\bhba[il1]c\b/gi, "HbA1c"],
-  [/\bt\s*3\b/gi, "T3"],
-  [/\bt\s*4\b/gi, "T4"],
-  [/\bt\s*s\s*h\b/gi, "TSH"],
-  [/\bw\s*b\s*c\b/gi, "WBC"],
-  [/\br\s*b\s*c\b/gi, "RBC"],
-];
-
-function normalizeMedicalOcrLine(line: string) {
-  let next = normalizeText(line);
-
-  for (const [pattern, replacement] of MEDICAL_OCR_NORMALIZATION_RULES) {
-    next = next.replace(pattern, replacement);
-  }
-
-  return next
-    .replace(/[|]{2,}/g, " | ")
-    .replace(/[_=]{2,}/g, " ")
-    .replace(/\s*[:|-]\s*/g, (match) => (match.includes(":") ? ": " : " - "))
-    .replace(/\s{2,}/g, " ")
-    .trim();
-}
 
 function isLikelyAdministrativeNoise(line: string) {
   return (
@@ -507,53 +862,6 @@ function isLikelyAdministrativeNoise(line: string) {
     scoreMedicalLine(line) < 3 &&
     !/\b(?:bp|pulse|glucose|sugar|tablet|capsule|mg|ml|result|test|value)\b/i.test(line)
   );
-}
-
-function buildHeuristicMedicalOcrText(text: string) {
-  const normalized = normalizeText(text);
-
-  if (!normalized) {
-    return "";
-  }
-
-  const rawLines = normalized
-    .split("\n")
-    .map((line) => normalizeMedicalOcrLine(line))
-    .filter(Boolean);
-  const cleanedLines: string[] = [];
-
-  for (const line of rawLines) {
-    if (line.length < 2) {
-      continue;
-    }
-
-    if (isLikelyAdministrativeNoise(line)) {
-      continue;
-    }
-
-    const previousLine = cleanedLines[cleanedLines.length - 1] || "";
-    const shouldMergeWithPrevious =
-      previousLine.length > 0 &&
-      previousLine.length < 45 &&
-      line.length < 80 &&
-      scoreMedicalLine(`${previousLine} ${line}`) >= scoreMedicalLine(previousLine) + 2;
-
-    if (shouldMergeWithPrevious) {
-      cleanedLines[cleanedLines.length - 1] = `${previousLine} ${line}`.replace(/\s{2,}/g, " ").trim();
-      continue;
-    }
-
-    if (scoreMedicalLine(line) >= 2 || /\b(?:patient|date|age|sex|doctor|diagnosis|medicine|advice|remarks)\b/i.test(line)) {
-      cleanedLines.push(line);
-    }
-  }
-
-  const prioritizedLines =
-    cleanedLines.length > 0
-      ? cleanedLines
-      : selectImportantMedicalLines(normalized, 24).map((line) => normalizeMedicalOcrLine(line));
-
-  return normalizeText(prioritizedLines.join("\n")) || normalized;
 }
 
 function uniqueNormalizedStrings(values: Array<string | null | undefined>) {
@@ -646,8 +954,11 @@ function enrichMedicinesWithFallback(
   const fallbackByName = new Map(
     fallbackMedicines.map((item) => [normalizeLookupKey(item.name), item] as const)
   );
+  const seenKeys = new Set<string>();
 
-  return medicines.map((item) => {
+  const enrichedMedicines = medicines.map((item) => {
+    const itemKey = normalizeLookupKey(item.name);
+    seenKeys.add(itemKey);
     const fallback = fallbackByName.get(normalizeLookupKey(item.name));
 
     if (!fallback) {
@@ -662,6 +973,19 @@ function enrichMedicinesWithFallback(
       notes: item.notes || fallback.notes,
     };
   });
+
+  for (const fallbackMedicine of fallbackMedicines) {
+    const fallbackKey = normalizeLookupKey(fallbackMedicine.name);
+
+    if (!fallbackKey || seenKeys.has(fallbackKey)) {
+      continue;
+    }
+
+    seenKeys.add(fallbackKey);
+    enrichedMedicines.push(fallbackMedicine);
+  }
+
+  return enrichedMedicines;
 }
 
 function enrichTestsWithFallback(testValues: TestValueEntry[], fallbackTests: TestValueEntry[]) {
@@ -672,8 +996,11 @@ function enrichTestsWithFallback(testValues: TestValueEntry[], fallbackTests: Te
   const fallbackByName = new Map(
     fallbackTests.map((item) => [normalizeLookupKey(item.name), item] as const)
   );
+  const seenKeys = new Set<string>();
 
-  return testValues.map((item) => {
+  const enrichedTests = testValues.map((item) => {
+    const itemKey = normalizeLookupKey(item.name);
+    seenKeys.add(itemKey);
     const fallback = fallbackByName.get(normalizeLookupKey(item.name));
 
     if (!fallback) {
@@ -688,6 +1015,19 @@ function enrichTestsWithFallback(testValues: TestValueEntry[], fallbackTests: Te
       explanation: item.explanation || fallback.explanation,
     };
   });
+
+  for (const fallbackTest of fallbackTests) {
+    const fallbackKey = normalizeLookupKey(fallbackTest.name);
+
+    if (!fallbackKey || seenKeys.has(fallbackKey)) {
+      continue;
+    }
+
+    seenKeys.add(fallbackKey);
+    enrichedTests.push(fallbackTest);
+  }
+
+  return enrichedTests;
 }
 
 function buildAnalysisEvidenceBundle(
@@ -698,7 +1038,7 @@ function buildAnalysisEvidenceBundle(
   const normalizedStructuredOcr = normalizeStructuredOcrData(structuredOcr);
 
   return {
-    importantLines: selectImportantMedicalLines(extractedText),
+    importantLines: selectImportantMedicalLines(extractedText, 28),
     candidateMedicines: dedupeByKey(
       [
         ...fallbackAnalysis.medicines.slice(0, 8).map((item) => ({
@@ -714,7 +1054,7 @@ function buildAnalysisEvidenceBundle(
       ],
       (item) => normalizeLookupKey(item.name)
     ),
-    candidateTestValues: fallbackAnalysis.testValues.slice(0, 10).map((item) => ({
+    candidateTestValues: fallbackAnalysis.testValues.slice(0, 16).map((item) => ({
       name: item.name,
       value: item.value,
       unit: item.unit,
@@ -745,6 +1085,9 @@ function buildMedicalAnalysisPrompt(language: OutputLanguage) {
     "Prefer exact medicine names, numeric values, units, and reference ranges as written in the report.",
     "Ignore non-clinical noise such as addresses, billing text, repeated headers, and branding unless clinically relevant.",
     "Ignore hospital names, addresses, phone numbers, availability text, and promotional text unless they directly describe a finding or instruction.",
+    "If a test, medicine, or risk statement is not directly supported by the OCR text, do not include it.",
+    "Do not convert general medical knowledge into patient-specific findings unless the report text itself supports that conclusion.",
+    "If no abnormal value or risk is clearly supported by the extracted report data, say so explicitly instead of implying a problem.",
     "overview must briefly describe what this document appears to contain and summarize the most important clinical findings only.",
     "plainLanguageSummary must clearly cover: report summary, key findings, abnormal values if any, and a simple patient-friendly explanation.",
     "possibleConditions should be conservative and evidence-based. Do not infer a disease from a medicine name alone. Leave this empty when the report does not support a condition hypothesis.",
@@ -1832,14 +2175,27 @@ async function generateReportOnlyChatReply(payload: {
       ],
     });
 
-    return normalizeText(
-      completion.choices[0]?.message?.content || groundedReply ||
+    const rewrittenReply = normalizeText(completion.choices[0]?.message?.content || "");
+    const fallbackReply =
+      groundedReply ||
         chooseLocalizedText(language, {
           en: "I could not generate an answer for that report.",
           hi: "मैं इस रिपोर्ट के लिए उत्तर उत्पन्न नहीं कर सका।",
           hinglish: "Main is report ke liye answer generate nahi kar saka.",
-        })
-    );
+        });
+
+    return shouldAcceptConstrainedRewrite({
+      candidate: rewrittenReply,
+      sourceTexts: [
+        groundedReply,
+        reportSnapshot,
+        historyContext,
+        payload.currentReport.chatHistory || "",
+        payload.question,
+      ],
+    })
+      ? rewrittenReply
+      : fallbackReply;
   } catch {
     return groundedReply;
   }
@@ -1921,16 +2277,17 @@ function detectReportQuestion(question: string, currentReport: ChatReportContext
 
 function buildSymptomSupportPrompt(language: OutputLanguage) {
   return [
-    "You provide conservative symptom-based health education.",
-    "Use the user's symptom description first, and use the report snapshot only as supporting context when it clearly matters.",
-    "Do not claim to diagnose, confirm, or rule out a disease.",
-    "possibleConditions should contain only plausible condition categories with short reasoning grounded in the symptoms.",
-    "suggestedMedicines must include only common over-the-counter or supportive options when appropriate.",
-    "Never suggest antibiotics, steroids, sedatives, injections, prescription-only medicines, or unsafe treatments.",
-    "Do not include medicine dosages. Tell the user to follow the product label and speak with a clinician or pharmacist if they are pregnant, elderly, immunocompromised, have chronic disease, or already take medicines.",
-    "precautions should include hydration, rest, monitoring, and urgent warning signs when relevant.",
+    "You provide report-grounded follow-up answers for symptom questions about an uploaded medical report.",
+    "Treat the user's symptom description as a request to search the extracted report data, not as new clinical evidence.",
+    "Base every field only on the current report OCR excerpt, structured analysis, report history, and grounded report-only answer.",
+    "If the report does not clearly mention or support the symptom question, say that plainly in summary and keep unsupported arrays empty.",
+    "Do not diagnose, speculate, or add any medicine, condition, value, treatment, or home remedy that is not already present in the extracted report data.",
+    "possibleConditions may include only conditions already present in the extracted report data and only when they are relevant to the user's question.",
+    "suggestedMedicines may include only medicines already extracted from the report and only when their purpose or notes are clearly relevant to the user's question.",
+    "Never invent over-the-counter options, prescription choices, dosages, or symptom relief advice from general medical knowledge.",
+    "precautions must come only from extracted precautions, report guidance, safety flags, alerts, or emergency actions already present in the report data.",
     'disclaimer must be exactly: "This is not a medical diagnosis."',
-    "Keep the wording clear, calm, and practical.",
+    "Keep the wording clear, structured, calm, and practical.",
     languageInstruction(language),
   ].join(" ");
 }
@@ -1940,13 +2297,17 @@ function buildSymptomSupportUserMessage(payload: {
   currentReport: ChatReportContext;
   historyContext: string;
   reportSnapshot: string;
+  groundedReportReply: string;
 }) {
   return [
-    "Analyze the user's described symptoms and return JSON only.",
-    "If the uploaded report does not materially change the advice, focus on the symptoms and keep the report context minimal.",
+    "Answer the user's symptom question using only the uploaded report and return JSON only.",
+    "If the extracted report data does not clearly support the symptom question, say that plainly and leave unsupported arrays empty.",
     "",
     "User question:",
     payload.question,
+    "",
+    "Grounded report-only answer:",
+    trimForModel(payload.groundedReportReply, 2500),
     "",
     "Current report snapshot:",
     trimForModel(payload.reportSnapshot, 4500),
@@ -2002,20 +2363,19 @@ function formatSymptomSupportReply(payload: SymptomSupportPayload, language: Out
   const sectionTitle = (label: { en: string; hi: string; hinglish: string }) =>
     chooseLocalizedText(language, label);
   const noConditionText = chooseLocalizedText(language, {
-    en: "No clear condition category could be narrowed down from the symptom text alone.",
-    hi: "Sirf symptom text se koi clear condition category narrow down nahi hui.",
-    hinglish: "Sirf symptom text se koi clear condition category narrow down nahi hui.",
+    en: "The extracted report data does not clearly link a specific condition to this question.",
+    hi: "Extracted report data is question ko kisi specific condition se clearly link nahi karta.",
+    hinglish: "Extracted report data is question ko kisi specific condition se clearly link nahi karta.",
   });
   const noMedicineText = chooseLocalizedText(language, {
-    en: "No general medicine suggestion is appropriate from symptoms alone. Supportive care and clinician guidance are safer.",
-    hi: "Sirf symptoms ke basis par koi general medicine suggestion theek nahi hai. Supportive care aur clinician guidance zyada safe hai.",
-    hinglish:
-      "Sirf symptoms ke basis par koi general medicine suggestion theek nahi hai. Supportive care aur clinician guidance zyada safe hai.",
+    en: "No medicine in the extracted report could be clearly linked to this symptom question.",
+    hi: "Extracted report me koi bhi medicine is symptom question se clearly link nahi hui.",
+    hinglish: "Extracted report me koi bhi medicine is symptom question se clearly link nahi hui.",
   });
   const noPrecautionText = chooseLocalizedText(language, {
-    en: "Rest, drink fluids, and seek urgent care if symptoms become severe or rapidly worsen.",
-    hi: "Rest karein, fluids lein, aur symptoms severe ya rapidly worse hon to urgent care lein.",
-    hinglish: "Rest karein, fluids lein, aur symptoms severe ya rapidly worse hon to urgent care lein.",
+    en: "No specific precaution for this question was clearly extracted from the report.",
+    hi: "Is question ke liye report se koi specific precaution clearly extract nahi hui.",
+    hinglish: "Is question ke liye report se koi specific precaution clearly extract nahi hui.",
   });
 
   return normalizeText(
@@ -2028,18 +2388,18 @@ function formatSymptomSupportReply(payload: SymptomSupportPayload, language: Out
       payload.summary,
       "",
       `${sectionTitle({
-        en: "Possible condition(s)",
-        hi: "Possible condition(s)",
-        hinglish: "Possible condition(s)",
+        en: "Relevant report-linked conditions",
+        hi: "Relevant report-linked conditions",
+        hinglish: "Relevant report-linked conditions",
       })}:`,
       payload.possibleConditions.length
         ? payload.possibleConditions.map((item) => `- ${item.name}: ${item.rationale}`).join("\n")
         : `- ${noConditionText}`,
       "",
       `${sectionTitle({
-        en: "Suggested medicines",
-        hi: "Suggested medicines",
-        hinglish: "Suggested medicines",
+        en: "Relevant extracted medicines",
+        hi: "Relevant extracted medicines",
+        hinglish: "Relevant extracted medicines",
       })}:`,
       payload.suggestedMedicines.length
         ? payload.suggestedMedicines
@@ -2048,9 +2408,9 @@ function formatSymptomSupportReply(payload: SymptomSupportPayload, language: Out
         : `- ${noMedicineText}`,
       "",
       `${sectionTitle({
-        en: "Precautions",
-        hi: "Precautions",
-        hinglish: "Precautions",
+        en: "Precautions from extracted data",
+        hi: "Precautions from extracted data",
+        hinglish: "Precautions from extracted data",
       })}:`,
       payload.precautions.length
         ? payload.precautions.map((item) => `- ${item}`).join("\n")
@@ -2093,9 +2453,9 @@ function buildCombinedChatReply(reportReply: string, symptomReply: string, langu
   return normalizeText(
     [
       `${chooseLocalizedText(language, {
-        en: "Report context",
-        hi: "Report context",
-        hinglish: "Report context",
+        en: "Report-based answer",
+        hi: "Report-based answer",
+        hinglish: "Report-based answer",
       })}:`,
       reportReply,
       "",
@@ -2110,6 +2470,7 @@ async function generateSymptomSupportWithGemini(payload: {
   currentReport: ChatReportContext;
   historyContext: string;
   reportSnapshot: string;
+  groundedReportReply: string;
 }) {
   if (!serverConfig.geminiApiKey) {
     throw new ApiError("Gemini API key is not configured.", 500);
@@ -2136,6 +2497,7 @@ async function generateSymptomSupportWithGemini(payload: {
                   currentReport: payload.currentReport,
                   historyContext: payload.historyContext,
                   reportSnapshot: payload.reportSnapshot,
+                  groundedReportReply: payload.groundedReportReply,
                 }),
               },
             ],
@@ -2183,6 +2545,7 @@ async function generateSymptomSupport(payload: {
   currentReport: ChatReportContext;
   historyContext: string;
   reportSnapshot: string;
+  groundedReportReply: string;
 }) {
   try {
     const completion = await openai.chat.completions.create({
@@ -2210,6 +2573,7 @@ async function generateSymptomSupport(payload: {
             currentReport: payload.currentReport,
             historyContext: payload.historyContext,
             reportSnapshot: payload.reportSnapshot,
+            groundedReportReply: payload.groundedReportReply,
           }),
         },
       ],
@@ -2246,16 +2610,13 @@ export async function generateChatReply(payload: {
   const language = payload.language || payload.currentReport.insights?.preferredLanguage || "en";
   const symptomQueryDetected = detectSymptomQuery(payload.question);
   const reportQueryDetected = detectReportQuestion(payload.question, payload.currentReport);
-  const shouldAnswerFromReport = reportQueryDetected || !symptomQueryDetected;
-  const reportReply = shouldAnswerFromReport
-    ? await generateReportOnlyChatReply({
-        question: payload.question,
-        userId: payload.userId,
-        language,
-        currentReport: payload.currentReport,
-        history: payload.history,
-      })
-    : "";
+  const reportReply = await generateReportOnlyChatReply({
+    question: payload.question,
+    userId: payload.userId,
+    language,
+    currentReport: payload.currentReport,
+    history: payload.history,
+  });
 
   if (!symptomQueryDetected) {
     return reportReply;
@@ -2270,6 +2631,13 @@ export async function generateChatReply(payload: {
       insights: payload.currentReport.insights,
     },
   });
+  const symptomFallbackReply = buildReportScopedSymptomFallbackReply({
+    question: payload.question,
+    language,
+    currentReport: payload.currentReport,
+    reportReply,
+    includeReportAnswer: !reportQueryDetected,
+  });
 
   try {
     const symptomSupport = await generateSymptomSupport({
@@ -2279,16 +2647,30 @@ export async function generateChatReply(payload: {
       currentReport: payload.currentReport,
       historyContext,
       reportSnapshot,
+      groundedReportReply: reportReply,
     });
     const symptomReply = formatSymptomSupportReply(symptomSupport, language);
+    const acceptedSymptomReply = shouldAcceptConstrainedRewrite({
+      candidate: symptomReply,
+      sourceTexts: [
+        payload.question,
+        reportReply,
+        reportSnapshot,
+        payload.currentReport.ocrText || "",
+        historyContext,
+        payload.currentReport.chatHistory || "",
+      ],
+    })
+      ? symptomReply
+      : symptomFallbackReply;
 
-    return buildCombinedChatReply(reportReply, symptomReply, language);
+    return reportQueryDetected
+      ? buildCombinedChatReply(reportReply, acceptedSymptomReply, language)
+      : acceptedSymptomReply;
   } catch {
-    if (reportReply) {
-      return buildCombinedChatReply(reportReply, buildSymptomSupportUnavailableReply(language), language);
-    }
-
-    return buildSymptomSupportUnavailableReply(language);
+    return reportQueryDetected
+      ? buildCombinedChatReply(reportReply, symptomFallbackReply, language)
+      : symptomFallbackReply || buildSymptomSupportUnavailableReply(language);
   }
 }
 
@@ -2345,7 +2727,15 @@ export async function humanizeChatReply(payload: {
       ],
     });
 
-    return normalizeText(completion.choices[0]?.message?.content || fallbackReply);
+    const rewrittenReply = normalizeHumanizedCandidate(completion.choices[0]?.message?.content || "");
+
+    return shouldAcceptHumanizedRewrite({
+      candidate: rewrittenReply,
+      originalReply: fallbackReply,
+      reportSnapshot,
+    })
+      ? rewrittenReply
+      : fallbackReply;
   } catch {
     return fallbackReply;
   }

@@ -28,8 +28,11 @@ const MEDICAL_OCR_NORMALIZATION_RULES: Array<[RegExp, string]> = [
   [/\bmgi?d[li]\b/gi, "mg/dL"],
   [/\bg[li]\/d[li]\b/gi, "g/dL"],
   [/\bmiu\s*\/?\s*l\b/gi, "mIU/L"],
+  [/\buiu\s*\/?\s*ml\b/gi, "uIU/mL"],
   [/\bng\s*\/?\s*ml\b/gi, "ng/mL"],
   [/\bmmh[gq]\b/gi, "mmHg"],
+  [/\bmmol\s*\/?\s*l\b/gi, "mmol/L"],
+  [/\bmeq\s*\/?\s*l\b/gi, "mEq/L"],
   [/\bhba[il1]c\b/gi, "HbA1c"],
   [/\bt\s*3\b/gi, "T3"],
   [/\bt\s*4\b/gi, "T4"],
@@ -76,6 +79,10 @@ function scoreMedicalLine(line: string) {
     score += 2;
   }
 
+  if (looksLikeStructuredMedicalLine(trimmed)) {
+    score += 4;
+  }
+
   for (const pattern of MEDICAL_READABILITY_PATTERNS) {
     if (pattern.test(trimmed)) {
       score += 3;
@@ -95,6 +102,50 @@ function scoreMedicalLine(line: string) {
   }
 
   return score;
+}
+
+function repairSegmentedMedicalTokens(line: string) {
+  return line
+    .replace(/\bH\s*b\s*A\s*1\s*c\b/gi, "HbA1c")
+    .replace(/\bT\s*S\s*H\b/gi, "TSH")
+    .replace(/\bT\s*3\b/gi, "T3")
+    .replace(/\bT\s*4\b/gi, "T4")
+    .replace(/\bW\s*B\s*C\b/gi, "WBC")
+    .replace(/\bR\s*B\s*C\b/gi, "RBC")
+    .replace(/\bm\s*g\s*\/\s*d\s*l\b/gi, "mg/dL")
+    .replace(/\bg\s*\/\s*d\s*l\b/gi, "g/dL")
+    .replace(/\bm\s*I\s*U\s*\/\s*L\b/gi, "mIU/L")
+    .replace(/\bu\s*I\s*U\s*\/\s*m\s*L\b/gi, "uIU/mL")
+    .replace(/\bn\s*g\s*\/\s*m\s*l\b/gi, "ng/mL")
+    .replace(/\bm\s*m\s*H\s*g\b/gi, "mmHg");
+}
+
+function looksLikeStructuredMedicalLine(line: string) {
+  const normalized = normalizeText(line);
+
+  if (!normalized) {
+    return false;
+  }
+
+  const hasValue = /\b-?\d+(?:\.\d+)?(?:\/\d{2,3})?\b/.test(normalized);
+  const hasUnitOrRange =
+    /\b(?:mg\/dL|g\/dL|mIU\/L|uIU\/mL|ng\/mL|mmHg|mmol\/L|mEq\/L|IU\/L|U\/L|bpm|cells\/cumm)\b/i.test(
+      normalized
+    ) ||
+    /\b(?:ref(?:erence)?(?: range)?|normal(?: range)?|bio\.?\s*ref\.?\s*interval|range)\b/i.test(
+      normalized
+    ) ||
+    /(?:<|>)\s*-?\d+(?:\.\d+)?/.test(normalized) ||
+    /-?\d+(?:\.\d+)?\s*(?:to|-)\s*-?\d+(?:\.\d+)?/.test(normalized);
+
+  return hasValue && hasUnitOrRange;
+}
+
+function countStructuredMedicalLines(text: string) {
+  return normalizeText(text)
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => looksLikeStructuredMedicalLine(line)).length;
 }
 
 function assessOcrTextQuality(text: string): OcrTextAssessment {
@@ -205,7 +256,7 @@ function assessOcrTextQuality(text: string): OcrTextAssessment {
 }
 
 function normalizeMedicalOcrLine(line: string) {
-  let next = normalizeText(line);
+  let next = repairSegmentedMedicalTokens(normalizeText(line));
 
   for (const [pattern, replacement] of MEDICAL_OCR_NORMALIZATION_RULES) {
     next = next.replace(pattern, replacement);
@@ -219,7 +270,7 @@ function normalizeMedicalOcrLine(line: string) {
     .trim();
 }
 
-function selectImportantMedicalLines(text: string, maxLines = 24) {
+function selectImportantMedicalLines(text: string, maxLines = 32) {
   return normalizeText(text)
     .split("\n")
     .map((line, index) => {
@@ -291,6 +342,7 @@ function buildHeuristicMedicalOcrText(text: string) {
     const normalizedKey = line.toLowerCase();
     const repeatCount = seenLines.get(normalizedKey) || 0;
     const lineScore = scoreMedicalLine(line);
+    const lineLooksStructured = looksLikeStructuredMedicalLine(line);
 
     if (repeatCount > 0 && lineScore <= 4) {
       continue;
@@ -299,10 +351,14 @@ function buildHeuristicMedicalOcrText(text: string) {
     seenLines.set(normalizedKey, repeatCount + 1);
 
     const previousLine = cleanedLines[cleanedLines.length - 1] || "";
+    const previousLooksStructured = looksLikeStructuredMedicalLine(previousLine);
     const shouldMergeWithPrevious =
       previousLine.length > 0 &&
-      previousLine.length < 60 &&
-      line.length < 90 &&
+      !previousLooksStructured &&
+      !lineLooksStructured &&
+      previousLine.length < 72 &&
+      line.length < 110 &&
+      !/\b-?\d+(?:\.\d+)?(?:\/\d{2,3})?\b/.test(previousLine) &&
       scoreMedicalLine(`${previousLine} ${line}`) >= scoreMedicalLine(previousLine) + 2;
 
     if (shouldMergeWithPrevious) {
@@ -314,6 +370,7 @@ function buildHeuristicMedicalOcrText(text: string) {
 
     if (
       lineScore >= 2 ||
+      lineLooksStructured ||
       /\b(?:patient|date|age|sex|doctor|diagnosis|medicine|advice|remarks|impression)\b/i.test(
         line
       )
@@ -336,10 +393,13 @@ function normalizeCleanedOcrText(cleanedText: string, fallbackText: string) {
   const normalizedFallbackText = normalizeText(fallbackText);
   const cleanedImportantLines = selectImportantMedicalLines(normalizedCleanedText, 24).length;
   const fallbackImportantLines = selectImportantMedicalLines(normalizedFallbackText, 24).length;
+  const cleanedStructuredLines = countStructuredMedicalLines(normalizedCleanedText);
+  const fallbackStructuredLines = countStructuredMedicalLines(normalizedFallbackText);
   const cleanedLooksOverCompressed =
     Boolean(normalizedCleanedText) &&
     Boolean(normalizedFallbackText) &&
-    normalizedCleanedText.length < normalizedFallbackText.length * 0.45 &&
+    (normalizedCleanedText.length < normalizedFallbackText.length * 0.45 ||
+      cleanedStructuredLines + 1 < fallbackStructuredLines) &&
     cleanedImportantLines + 2 < fallbackImportantLines;
 
   return (
@@ -442,6 +502,7 @@ async function buildImageVariantsForOcr(payload: {
       .clone()
       .grayscale()
       .normalize()
+      .gamma(1.1)
       .sharpen({ sigma: 1.2, m1: 0.5, m2: 2 })
       .linear(1.12, -10)
       .png({ compressionLevel: 9 })
@@ -460,6 +521,7 @@ async function buildImageVariantsForOcr(payload: {
       .grayscale()
       .normalize()
       .median(1)
+      .gamma(1.18)
       .linear(1.24, -18)
       .sharpen({ sigma: 1.35, m1: 0.45, m2: 2.4 })
       .png({ compressionLevel: 9 })
@@ -478,6 +540,7 @@ async function buildImageVariantsForOcr(payload: {
       .grayscale()
       .normalize()
       .median(1)
+      .gamma(1.12)
       .linear(1.28, -20)
       .threshold(172, { grayscale: true })
       .sharpen({ sigma: 0.9, m1: 0.4, m2: 1.8 })
@@ -490,6 +553,25 @@ async function buildImageVariantsForOcr(payload: {
       mimeType: "image/png",
       preprocessingApplied: true,
       label: "thresholded",
+    });
+
+    const denoisedBuffer = await pipeline
+      .clone()
+      .grayscale()
+      .normalize()
+      .median(2)
+      .gamma(1.16)
+      .linear(1.2, -14)
+      .sharpen({ sigma: 1.1, m1: 0.45, m2: 2.1 })
+      .png({ compressionLevel: 9 })
+      .toBuffer();
+
+    variants.push({
+      buffer: denoisedBuffer,
+      filename: `${baseName}-ocr-denoised.png`,
+      mimeType: "image/png",
+      preprocessingApplied: true,
+      label: "denoised",
     });
 
     return variants;
@@ -528,7 +610,7 @@ async function runTesseractOnImage(
 }
 
 async function runBestTesseractOnImageVariants(variants: PreparedOcrImageVariant[]) {
-  const configs = [{ psm: 6 }, { psm: 4 }, { psm: 11 }];
+  const configs = [{ psm: 6 }, { psm: 4 }, { psm: 11 }, { psm: 3 }];
   const warnings: string[] = [];
   let best:
     | {
@@ -624,9 +706,17 @@ async function runTesseractOnPdf(buffer: Buffer) {
   const selectedPages =
     strongPages.length > 0
       ? strongPages
-      : fallbackPages
-          .sort((left, right) => right.score - left.score || left.pageNumber - right.pageNumber)
-          .slice(0, Math.min(2, fallbackPages.length));
+      : (
+          fallbackPages
+            .filter((page) => page.score >= 10)
+            .sort((left, right) => left.pageNumber - right.pageNumber)
+        ).length > 0
+        ? fallbackPages
+            .filter((page) => page.score >= 10)
+            .sort((left, right) => left.pageNumber - right.pageNumber)
+        : fallbackPages
+            .sort((left, right) => right.score - left.score || left.pageNumber - right.pageNumber)
+            .slice(0, Math.min(3, fallbackPages.length));
 
   return {
     text: normalizeText(selectedPages.map((page) => page.text).join("\n\n")),

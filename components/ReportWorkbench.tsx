@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import type { Session } from "@supabase/supabase-js";
 import type {
+  ChatMessageRecord,
   DoctorRecommendation,
   ReportConfidenceSummary,
   ReportDetail,
@@ -79,6 +80,36 @@ function getInitials(name?: string | null, email?: string | null) {
   return source.slice(0, 1).toUpperCase();
 }
 
+function mergeChatMessages(
+  existingMessages: ChatMessageRecord[],
+  incomingMessages: ChatMessageRecord[]
+) {
+  const merged = new Map<string, ChatMessageRecord>();
+
+  for (const message of existingMessages) {
+    merged.set(message.id, message);
+  }
+
+  for (const message of incomingMessages) {
+    merged.set(message.id, message);
+  }
+
+  return Array.from(merged.values()).sort((left, right) => {
+    const createdAtDelta =
+      new Date(left.created_at).getTime() - new Date(right.created_at).getTime();
+
+    if (createdAtDelta !== 0) {
+      return createdAtDelta;
+    }
+
+    if (left.role !== right.role) {
+      return left.role === "user" ? -1 : 1;
+    }
+
+    return left.id.localeCompare(right.id);
+  });
+}
+
 export default function ReportWorkbench() {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -112,6 +143,11 @@ export default function ReportWorkbench() {
   const [activePage, setActivePage] = useState<WorkspacePageId>("dashboard");
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [dark, setDark] = useState(true);
+  const selectedReportIdRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    selectedReportIdRef.current = selectedReportId;
+  }, [selectedReportId]);
 
   const authorizedFetchJson = useCallback(
     async (input: string, init?: RequestInit): Promise<Record<string, unknown>> => {
@@ -183,14 +219,36 @@ export default function ReportWorkbench() {
   );
 
   const loadReport = useCallback(
-    async (reportId: string) => {
-      setReportLoading(true);
+    async (reportId: string, options?: { background?: boolean }) => {
+      if (!options?.background) {
+        setReportLoading(true);
+      }
 
       try {
-        const payload = await authorizedFetchJson(`/api/reports/${reportId}`);
-        setSelectedReport((payload.report as ReportDetail | undefined) || null);
+        const payload = await authorizedFetchJson(`/api/reports/${reportId}`, {
+          cache: "no-store",
+        });
+        const nextReport = (payload.report as ReportDetail | undefined) || null;
+
+        setSelectedReport((current) => {
+          if (selectedReportIdRef.current !== reportId) {
+            return current;
+          }
+
+          if (!nextReport) {
+            return nextReport;
+          }
+
+          if (!current || current.id !== reportId) {
+            return nextReport;
+          }
+
+          return nextReport;
+        });
       } finally {
-        setReportLoading(false);
+        if (!options?.background) {
+          setReportLoading(false);
+        }
       }
     },
     [authorizedFetchJson]
@@ -495,28 +553,105 @@ export default function ReportWorkbench() {
   async function handleAskQuestion(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
 
-    if (!selectedReportId || !chatInput.trim()) {
+    const reportId = selectedReportId;
+    const question = chatInput.trim();
+
+    if (!reportId || !question) {
       return;
     }
 
+    const optimisticUserMessage: ChatMessageRecord = {
+      id: `temp-user-${Date.now()}`,
+      report_id: reportId,
+      user_id: selectedReport?.user_id || session?.user.id || "",
+      role: "user",
+      message: question,
+      response_json: null,
+      created_at: new Date().toISOString(),
+    };
+
     setChatLoading(true);
     setNotice(null);
+    setChatInput("");
+    setSelectedReport((current) => {
+      if (!current || current.id !== reportId) {
+        return current;
+      }
+
+      return {
+        ...current,
+        chat_messages: [...current.chat_messages, optimisticUserMessage],
+      };
+    });
 
     try {
-      await authorizedFetchJson("/api/chat", {
+      const payload = await authorizedFetchJson("/api/chat", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
-          reportId: selectedReportId,
-          message: chatInput.trim(),
+          reportId,
+          message: question,
         }),
       });
 
-      setChatInput("");
-      await loadReport(selectedReportId);
+      const savedMessages = (payload.messages as ChatMessageRecord[] | undefined) || [];
+      const reply =
+        typeof payload.reply === "string" && payload.reply.trim()
+          ? payload.reply.trim()
+          : null;
+      const fallbackMessages = savedMessages.length
+        ? savedMessages
+        : [
+            {
+              ...optimisticUserMessage,
+              id: `${optimisticUserMessage.id}-confirmed`,
+            },
+            ...(reply
+              ? [
+                  {
+                    id: `temp-assistant-${Date.now()}`,
+                    report_id: reportId,
+                    user_id: selectedReport?.user_id || session?.user.id || "",
+                    role: "assistant" as const,
+                    message: reply,
+                    response_json: null,
+                    created_at: new Date().toISOString(),
+                  },
+                ]
+              : []),
+          ];
+
+      setSelectedReport((current) => {
+        if (!current || current.id !== reportId) {
+          return current;
+        }
+
+        return {
+          ...current,
+          chat_messages: mergeChatMessages(
+            current.chat_messages.filter((message) => message.id !== optimisticUserMessage.id),
+            fallbackMessages
+          ),
+        };
+      });
+
+      void loadReport(reportId, { background: true }).catch(() => undefined);
     } catch (error) {
+      setSelectedReport((current) => {
+        if (!current || current.id !== reportId) {
+          return current;
+        }
+
+        return {
+          ...current,
+          chat_messages: current.chat_messages.filter(
+            (message) => message.id !== optimisticUserMessage.id
+          ),
+        };
+      });
+      setChatInput(question);
       setNotice({
         type: "error",
         text: error instanceof Error ? error.message : "Unable to get chat response.",

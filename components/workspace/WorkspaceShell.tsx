@@ -1,6 +1,7 @@
 "use client";
 
-import type { ChangeEvent, FormEvent, RefObject } from "react";
+import { useEffect, useRef, useState, type ChangeEvent, type FormEvent, type RefObject } from "react";
+import BrandWordmark from "@/components/BrandWordmark";
 import type {
   ChatMessageRecord,
   DoctorRecommendation,
@@ -24,7 +25,6 @@ import {
   DoctorIcon,
   FileIcon,
   InfoIcon,
-  LogoIcon,
   MenuIcon,
   MicIcon,
   SignOutIcon,
@@ -98,6 +98,8 @@ const PAGE_TITLES: Record<WorkspacePageId, string> = {
   reminders: "Reminders",
   chat: "Chat / Assistant",
 };
+
+const CHAT_SCROLL_LATEST_THRESHOLD = 96;
 
 function formatDate(value?: string | null) {
   if (!value) {
@@ -205,11 +207,122 @@ function getOcrPreviewLines(text?: string | null) {
     .split(/\r?\n/)
     .map((line) => line.trim())
     .filter(Boolean)
-    .slice(0, 4);
+    .slice(0, 6);
 }
 
 function joinClassNames(...values: Array<string | false | null | undefined>) {
   return values.filter(Boolean).join(" ");
+}
+
+function dedupeStrings(values: Array<string | null | undefined>) {
+  return Array.from(
+    new Set(values.map((value) => (value || "").trim()).filter(Boolean))
+  );
+}
+
+function buildDisplayPrecautions(
+  analysis?: MedicalAnalysis | null,
+  insights?: HealthInsights | null
+) {
+  return (
+    analysis?.precautions?.length ? analysis.precautions : insights?.generalGuidance || []
+  ).slice(0, 6);
+}
+
+function buildDisplayMedicines(
+  analysis?: MedicalAnalysis | null,
+  selectedReport?: ReportDetail | null
+) {
+  if (analysis?.medicines?.length) {
+    return analysis.medicines.map((item) => ({
+      ...item,
+      source: "analysis" as const,
+    }));
+  }
+
+  return (selectedReport?.ocr_structured?.medicines || []).slice(0, 10).map((name, index) => ({
+    name,
+    dosage: selectedReport?.ocr_structured?.dosage?.[index] || "",
+    frequency: "",
+    purpose: "",
+    notes: "Recovered from structured OCR output.",
+    source: "ocr" as const,
+  }));
+}
+
+function buildRiskSectionState(
+  insights?: HealthInsights | null,
+  emergencyAlertMessages: string[] = [],
+  ruleAlerts: HealthInsights["alerts"] = []
+) {
+  if (!insights) {
+    return {
+      label: "Pending",
+      tone: "neutral",
+      summary: "Health insights will appear after analysis.",
+      highlights: [] as string[],
+      hasRisk: false,
+    };
+  }
+
+  const abnormalFindings = insights.abnormalFindings || [];
+  const hasRisk =
+    insights.overallRisk !== "low" ||
+    abnormalFindings.length > 0 ||
+    emergencyAlertMessages.length > 0 ||
+    ruleAlerts.length > 0;
+
+  if (!hasRisk) {
+    return {
+      label: "No Risk",
+      tone: "low",
+      summary:
+        "No clearly abnormal value or urgent alert was identified from the extracted report data.",
+      highlights: dedupeStrings([
+        insights.summary,
+        insights.safetyNotice,
+      ]).slice(0, 2),
+      hasRisk: false,
+    };
+  }
+
+  return {
+    label: formatLabel(insights.overallRisk),
+    tone: insights.overallRisk,
+    summary: insights.summary || "Potential risk was identified from the extracted report data.",
+    highlights: dedupeStrings([
+      ...emergencyAlertMessages,
+      ...ruleAlerts.slice(0, 2).map((alert) => `${alert.title}: ${alert.reason}`),
+      ...abnormalFindings.slice(0, 3).map((item) => `${item.name}: ${item.value}`),
+    ]).slice(0, 4),
+    hasRisk: true,
+  };
+}
+
+function getReportDisplayName(report?: Pick<ReportRecord, "title" | "original_filename"> | null) {
+  return report?.title?.trim() || report?.original_filename || "Untitled report";
+}
+
+function buildChatQuickPrompts(analysis?: MedicalAnalysis | null) {
+  return dedupeStrings([
+    analysis?.followUpQuestions?.[0],
+    analysis?.followUpQuestions?.[1],
+    analysis?.testValues?.[0] ? `Explain my ${analysis.testValues[0].name} result.` : null,
+    analysis?.testValues?.[1] ? `Is ${analysis.testValues[1].name} concerning?` : null,
+    "Summarize this report in simple language.",
+    "What precautions should I follow?",
+  ]).slice(0, 4);
+}
+
+function shouldShowScrollLatestButton(element: HTMLDivElement) {
+  return element.scrollHeight - element.clientHeight - element.scrollTop > CHAT_SCROLL_LATEST_THRESHOLD;
+}
+
+function scrollChatToLatest(element: HTMLDivElement, behavior: ScrollBehavior) {
+  element.scrollTo({
+    top: element.scrollHeight,
+    behavior,
+  });
 }
 
 export default function WorkspaceShell({
@@ -264,11 +377,213 @@ export default function WorkspaceShell({
   const readyReports = reports.filter((report) => report.report_status === "ready").length;
   const readyPercentage = reports.length > 0 ? Math.round((readyReports / reports.length) * 100) : 0;
   const riskFlagsCount = emergencyAlerts.length + ruleAlerts.length;
-  const selectedMedicines = analysis?.medicines || [];
-  const selectedConditions = analysis?.possibleConditions || [];
+  const selectedMedicines = buildDisplayMedicines(analysis, selectedReport);
   const selectedTests = analysis?.testValues || [];
+  const displayPrecautions = buildDisplayPrecautions(analysis, insights);
   const ocrPreviewLines = getOcrPreviewLines(selectedReport?.ocr_text);
+  const riskSection = buildRiskSectionState(
+    insights,
+    emergencyAlerts.map((alert) => alert.message),
+    ruleAlerts
+  );
+  const confidenceReasons = confidenceSummary
+    ? dedupeStrings([
+        ...confidenceSummary.analysis.reasons,
+        ...confidenceSummary.ocr.reasons,
+      ]).slice(0, 4)
+    : [];
   const topDoctorRecommendations = doctorRecommendations.slice(0, 2);
+  const [reportMenuOpen, setReportMenuOpen] = useState(false);
+  const reportSelectorRef = useRef<HTMLDivElement | null>(null);
+  const chatInputRef = useRef<HTMLInputElement | null>(null);
+  const chatAreaRef = useRef<HTMLDivElement | null>(null);
+  const activeSectionRef = useRef<HTMLElement | null>(null);
+  const shouldStickChatToBottomRef = useRef(true);
+  const [showScrollLatestButton, setShowScrollLatestButton] = useState(false);
+  const quickPrompts = buildChatQuickPrompts(analysis);
+  const chatDisabled = chatLoading || !selectedReport?.analysis_json;
+  const latestMessageId = chatMessages[chatMessages.length - 1]?.id || null;
+  const latestMessageRole = chatMessages[chatMessages.length - 1]?.role || null;
+  const chatHeroStats = selectedReport
+    ? [
+        {
+          value: String(chatMessages.length),
+          label: "Messages",
+          hint: chatMessages.length ? "Saved in this report thread" : "Start the first follow-up",
+        },
+        {
+          value: String(selectedMedicines.length),
+          label: "Medicines",
+          hint: selectedMedicines.length ? "Available for dosage or precaution questions" : "No medicines extracted yet",
+        },
+        {
+          value: String(selectedTests.length),
+          label: "Tests",
+          hint: selectedTests.length ? "Values ready for explanation" : "No structured test values yet",
+        },
+        {
+          value: String(riskFlagsCount),
+          label: "Risk flags",
+          hint: riskFlagsCount ? "Flagged items to clarify with the assistant" : "No active alerts detected",
+        },
+      ]
+    : [
+        {
+          value: String(reports.length),
+          label: "Reports",
+          hint: reports.length ? "Saved in your private workspace" : "Upload your first report to begin",
+        },
+        {
+          value: String(readyReports),
+          label: "AI ready",
+          hint: readyReports ? "Reports ready for grounded chat" : "Waiting for completed analysis",
+        },
+        {
+          value: `${readyPercentage}%`,
+          label: "Coverage",
+          hint: reports.length ? "Saved reports with analysis complete" : "Coverage grows after upload",
+        },
+        {
+          value: "3",
+          label: "Modes",
+          hint: "Text, voice input, and humanized replies",
+        },
+      ];
+  const chatScopeBadges = [
+    "Report-grounded answers",
+    "Voice input ready",
+    "Humanized replies",
+    "Private saved history",
+  ];
+  const chatFocusItems = dedupeStrings([
+    analysis?.documentType || null,
+    ...selectedMedicines.slice(0, 2).map((item) => item.name),
+    ...selectedTests.slice(0, 2).map((item) => item.name),
+    analysis?.followUpQuestions?.[0] || null,
+  ]).slice(0, 5);
+  const emptyChatPrompts = quickPrompts.length
+    ? quickPrompts
+    : [
+        "Summarize this report in simple language.",
+        "Which findings should I discuss with a doctor?",
+        "What precautions should I follow next?",
+      ];
+
+  function handlePageOpen(pageId: WorkspacePageId) {
+    onShowPage(pageId);
+    onCloseSidebar();
+  }
+
+  useEffect(() => {
+    if (!reportMenuOpen) {
+      return;
+    }
+
+    const handlePointerDown = (event: MouseEvent) => {
+      if (!reportSelectorRef.current?.contains(event.target as Node)) {
+        setReportMenuOpen(false);
+      }
+    };
+
+    document.addEventListener("mousedown", handlePointerDown);
+    return () => document.removeEventListener("mousedown", handlePointerDown);
+  }, [reportMenuOpen]);
+
+  useEffect(() => {
+    const frame = window.requestAnimationFrame(() => {
+      activeSectionRef.current?.scrollIntoView({
+        block: "start",
+        inline: "nearest",
+        behavior: "auto",
+      });
+    });
+
+    return () => window.cancelAnimationFrame(frame);
+  }, [activePage]);
+
+  useEffect(() => {
+    if (activePage !== "chat" || !chatAreaRef.current) {
+      shouldStickChatToBottomRef.current = true;
+      return;
+    }
+
+    const area = chatAreaRef.current;
+
+    const syncScrollButton = () => {
+      const shouldShowButton = shouldShowScrollLatestButton(area);
+      shouldStickChatToBottomRef.current = !shouldShowButton;
+      setShowScrollLatestButton(shouldShowButton);
+    };
+
+    const frame = window.requestAnimationFrame(syncScrollButton);
+    area.addEventListener("scroll", syncScrollButton, { passive: true });
+
+    return () => {
+      window.cancelAnimationFrame(frame);
+      area.removeEventListener("scroll", syncScrollButton);
+    };
+  }, [activePage, selectedReportId]);
+
+  useEffect(() => {
+    if (activePage !== "chat" || !chatAreaRef.current) {
+      return;
+    }
+
+    const frame = window.requestAnimationFrame(() => {
+      const area = chatAreaRef.current;
+
+      if (!area) {
+        return;
+      }
+
+      scrollChatToLatest(area, "auto");
+      shouldStickChatToBottomRef.current = true;
+      setShowScrollLatestButton(false);
+    });
+
+    return () => window.cancelAnimationFrame(frame);
+  }, [activePage, selectedReportId]);
+
+  useEffect(() => {
+    if (activePage !== "chat" || !chatAreaRef.current) {
+      return;
+    }
+
+    if (!shouldStickChatToBottomRef.current && latestMessageRole !== "user") {
+      return;
+    }
+
+    const frame = window.requestAnimationFrame(() => {
+      const area = chatAreaRef.current;
+
+      if (!area) {
+        return;
+      }
+
+      scrollChatToLatest(area, latestMessageRole === "user" ? "smooth" : "auto");
+      shouldStickChatToBottomRef.current = true;
+      setShowScrollLatestButton(false);
+    });
+
+    return () => window.cancelAnimationFrame(frame);
+  }, [activePage, latestMessageId, latestMessageRole, chatLoading]);
+
+  function handleScrollToLatest() {
+    const area = chatAreaRef.current;
+
+    if (!area) {
+      return;
+    }
+
+    scrollChatToLatest(area, "smooth");
+    shouldStickChatToBottomRef.current = true;
+    setShowScrollLatestButton(false);
+  }
+
+  function handleQuickPromptSelect(prompt: string) {
+    onChatInputChange(prompt);
+    chatInputRef.current?.focus();
+  }
 
   return (
     <div className={styles.shell}>
@@ -281,20 +596,23 @@ export default function WorkspaceShell({
       />
 
       <aside className={joinClassNames(styles.sidebar, sidebarOpen ? styles.sidebarOpen : undefined)}>
-        <div className={styles.sidebarLogo}>
+        <button
+          type="button"
+          className={styles.sidebarLogo}
+          onClick={() => handlePageOpen("dashboard")}
+          aria-label="Go to dashboard"
+        >
           <div className={styles.logoIcon}>
-            <LogoIcon />
+            <span className={styles.logoEmoji} aria-hidden="true">🩺</span>
           </div>
-          <span className={joinClassNames(styles.logoText, styles.serif)}>
-            MedScan<span>AI</span>
-          </span>
-        </div>
+          <BrandWordmark className={styles.logoText} />
+        </button>
 
         <div className={styles.sidebarSectionLabel}>Main</div>
         <button
           type="button"
           className={joinClassNames(styles.navItem, activePage === "dashboard" ? styles.navActive : undefined)}
-          onClick={() => onShowPage("dashboard")}
+          onClick={() => handlePageOpen("dashboard")}
         >
           <DashboardIcon className={styles.navIcon} />
           Dashboard
@@ -302,7 +620,7 @@ export default function WorkspaceShell({
         <button
           type="button"
           className={joinClassNames(styles.navItem, activePage === "upload" ? styles.navActive : undefined)}
-          onClick={() => onShowPage("upload")}
+          onClick={() => handlePageOpen("upload")}
         >
           <UploadIcon className={styles.navIcon} />
           Upload Report
@@ -312,7 +630,7 @@ export default function WorkspaceShell({
         <button
           type="button"
           className={joinClassNames(styles.navItem, activePage === "trends" ? styles.navActive : undefined)}
-          onClick={() => onShowPage("trends")}
+          onClick={() => handlePageOpen("trends")}
         >
           <TrendsIcon className={styles.navIcon} />
           Health Trends
@@ -320,7 +638,7 @@ export default function WorkspaceShell({
         <button
           type="button"
           className={joinClassNames(styles.navItem, activePage === "compare" ? styles.navActive : undefined)}
-          onClick={() => onShowPage("compare")}
+          onClick={() => handlePageOpen("compare")}
         >
           <CompareIcon className={styles.navIcon} />
           Compare Reports
@@ -330,7 +648,7 @@ export default function WorkspaceShell({
         <button
           type="button"
           className={joinClassNames(styles.navItem, activePage === "reminders" ? styles.navActive : undefined)}
-          onClick={() => onShowPage("reminders")}
+          onClick={() => handlePageOpen("reminders")}
         >
           <BellIcon className={styles.navIcon} />
           Reminders
@@ -339,7 +657,7 @@ export default function WorkspaceShell({
         <button
           type="button"
           className={joinClassNames(styles.navItem, activePage === "chat" ? styles.navActive : undefined)}
-          onClick={() => onShowPage("chat")}
+          onClick={() => handlePageOpen("chat")}
         >
           <ChatIcon className={styles.navIcon} />
           Chat / Assistant
@@ -375,7 +693,7 @@ export default function WorkspaceShell({
         </div>
       </header>
 
-      <main className={styles.main}>
+      <main className={joinClassNames(styles.main, activePage === "chat" ? styles.mainChat : undefined)}>
         {notice ? (
           <div
             className={joinClassNames(
@@ -391,7 +709,10 @@ export default function WorkspaceShell({
           </div>
         ) : null}
 
-        <section className={joinClassNames(styles.pageSection, activePage === "dashboard" ? styles.pageSectionActive : undefined)}>
+        <section
+          ref={activePage === "dashboard" ? activeSectionRef : null}
+          className={joinClassNames(styles.pageSection, activePage === "dashboard" ? styles.pageSectionActive : undefined)}
+        >
           <div className={styles.sectionHeader}>
             <div>
               <div className={joinClassNames(styles.sectionTitle, styles.serif)}>Your personalized dashboard</div>
@@ -508,7 +829,7 @@ export default function WorkspaceShell({
 
             <div className={styles.sideStack}>
               <div className={styles.card}>
-                <div className={styles.cardTitle}>OCR Overview</div>
+                <div className={styles.cardTitle}>Scan Snapshot</div>
 
                 {reportLoading ? (
                   <div className={styles.emptyCard}>Loading OCR and report details...</div>
@@ -519,6 +840,12 @@ export default function WorkspaceShell({
                     <div className={styles.ocrSummary}>
                       <strong>{analysis?.documentType || "Medical report"}</strong>
                       <span>{selectedReport.ocr_engine || "OCR pending"}</span>
+                    </div>
+
+                    <div className={styles.metricPillRow}>
+                      <span className={styles.metricPill}>{selectedTests.length} tests</span>
+                      <span className={styles.metricPill}>{selectedMedicines.length} medicines</span>
+                      <span className={styles.metricPill}>{ocrPreviewLines.length} visible lines</span>
                     </div>
 
                     {ocrPreviewLines.length > 0 ? (
@@ -546,7 +873,7 @@ export default function WorkspaceShell({
               </div>
 
               <div className={styles.card}>
-                <div className={styles.cardTitle}>Doctor Recommendation</div>
+                <div className={styles.cardTitle}>Doctor Recommendations</div>
 
                 {doctorRecommendationLoading ? (
                   <div className={styles.emptyCard}>Reviewing stored findings for doctor suggestions...</div>
@@ -573,30 +900,36 @@ export default function WorkspaceShell({
               </div>
 
               <div className={styles.card}>
-                <div className={styles.cardTitle}>Health Alerts</div>
+                <div className={styles.cardTitle}>Risk Snapshot</div>
 
                 {reportLoading ? (
-                  <div className={styles.emptyCard}>Loading alert layers...</div>
-                ) : emergencyAlerts.length === 0 && ruleAlerts.length === 0 ? (
-                  <div className={styles.inlineStatusRow}>
-                    <CheckIcon className={styles.inlineStatusIcon} />
-                    No rule-based alerts generated
-                  </div>
+                  <div className={styles.emptyCard}>Loading risk layers...</div>
                 ) : (
-                  <div className={styles.stackList}>
-                    {emergencyAlerts.map((alert) => (
-                      <article key={alert.id} className={joinClassNames(styles.summaryAlert, styles.summaryAlertCritical)}>
-                        <strong>{formatLabel(alert.alert_type)}</strong>
-                        <p>{alert.message}</p>
-                      </article>
-                    ))}
-                    {ruleAlerts.slice(0, 2).map((alert) => (
-                      <article key={`${alert.title}-${alert.reason}`} className={styles.summaryAlert}>
-                        <strong>{alert.title}</strong>
-                        <p>{alert.reason}</p>
-                      </article>
-                    ))}
-                  </div>
+                  <>
+                    <div className={styles.summaryBadgeRow}>
+                      <span
+                        className={joinClassNames(
+                          styles.severityBadge,
+                          getSeverityClassName(riskSection.tone)
+                        )}
+                      >
+                        {riskSection.label}
+                      </span>
+                    </div>
+                    <p className={styles.sectionNote}>{riskSection.summary}</p>
+                    {riskSection.highlights.length > 0 ? (
+                      <ul className={styles.summaryHighlights}>
+                        {riskSection.highlights.map((item) => (
+                          <li key={item}>{item}</li>
+                        ))}
+                      </ul>
+                    ) : (
+                      <div className={styles.inlineStatusRow}>
+                        <CheckIcon className={styles.inlineStatusIcon} />
+                        No additional risk highlight is available.
+                      </div>
+                    )}
+                  </>
                 )}
               </div>
             </div>
@@ -646,23 +979,50 @@ export default function WorkspaceShell({
 
               <div className={styles.summaryGrid}>
                 <article className={joinClassNames(styles.card, styles.summaryCard)}>
-                  <span className={styles.cardLabel}>Overview</span>
+                  <span className={styles.cardLabel}>OCR Overview</span>
                   <p>{analysis?.overview || "Analysis not generated yet."}</p>
+                  {ocrPreviewLines.length > 0 ? (
+                    <ul className={styles.summaryHighlights}>
+                      {ocrPreviewLines.slice(0, 3).map((line) => (
+                        <li key={line}>{line}</li>
+                      ))}
+                    </ul>
+                  ) : null}
                 </article>
                 <article className={joinClassNames(styles.card, styles.summaryCard)}>
-                  <span className={styles.cardLabel}>Plain Language</span>
-                  <p>{analysis?.plainLanguageSummary || "Plain-language explanation will appear after AI processing."}</p>
+                  <span className={styles.cardLabel}>Plain Language Explanation</span>
+                  <p>
+                    {analysis?.plainLanguageSummary ||
+                      "Plain-language explanation will appear after AI processing."}
+                  </p>
                 </article>
                 <article className={joinClassNames(styles.card, styles.summaryCard)}>
-                  <span className={styles.cardLabel}>Risk</span>
-                  <p>{insights?.summary || "Health insights will appear after analysis."}</p>
+                  <div className={styles.summaryBadgeRow}>
+                    <span className={styles.cardLabel}>Risk Section</span>
+                    <span
+                      className={joinClassNames(
+                        styles.severityBadge,
+                        getSeverityClassName(riskSection.tone)
+                      )}
+                    >
+                      {riskSection.label}
+                    </span>
+                  </div>
+                  <p>{riskSection.summary}</p>
+                  {riskSection.highlights.length > 0 ? (
+                    <ul className={styles.summaryHighlights}>
+                      {riskSection.highlights.map((item) => (
+                        <li key={item}>{item}</li>
+                      ))}
+                    </ul>
+                  ) : null}
                 </article>
               </div>
 
               <div className={styles.detailGrid}>
                 <section className={joinClassNames(styles.card, styles.detailCard)}>
                   <div className={styles.detailHead}>
-                    <h3>AI Confidence</h3>
+                    <h3>AI Confidence Score</h3>
                     <span>{confidenceLoading ? "Loading..." : confidenceSummary ? `${confidenceSummary.overall.score}%` : "Unavailable"}</span>
                   </div>
                   <p className={styles.sectionNote}>Confidence is appended as metadata from OCR quality and AI output completeness.</p>
@@ -697,31 +1057,13 @@ export default function WorkspaceShell({
                   ) : (
                     <div className={styles.emptyInline}>Confidence metadata is not available yet.</div>
                   )}
-                </section>
-
-                <section className={joinClassNames(styles.card, styles.detailCard)}>
-                  <div className={styles.detailHead}>
-                    <h3>Possible Conditions</h3>
-                    <span>{selectedConditions.length}</span>
-                  </div>
-                  {selectedConditions.length === 0 ? (
-                    <div className={styles.emptyInline}>No condition hypotheses detected.</div>
-                  ) : (
-                    <div className={styles.stackList}>
-                      {selectedConditions.map((item) => (
-                        <article key={`${item.name}-${item.evidence}`} className={styles.listCard}>
-                          <div className={styles.listCardHead}>
-                            <strong>{item.name}</strong>
-                            <span className={joinClassNames(styles.severityBadge, getSeverityClassName(item.confidence))}>
-                              {formatLabel(item.confidence)}
-                            </span>
-                          </div>
-                          <p>{item.explanation}</p>
-                          <small>{item.evidence}</small>
-                        </article>
+                  {confidenceReasons.length > 0 ? (
+                    <ul className={styles.reasonList}>
+                      {confidenceReasons.map((reason) => (
+                        <li key={reason}>{reason}</li>
                       ))}
-                    </div>
-                  )}
+                    </ul>
+                  ) : null}
                 </section>
 
                 <section className={joinClassNames(styles.card, styles.detailCard)}>
@@ -734,35 +1076,13 @@ export default function WorkspaceShell({
                   ) : (
                     <div className={styles.stackList}>
                       {selectedMedicines.map((medicine) => (
-                        <article key={`${medicine.name}-${medicine.dosage}`} className={styles.listCard}>
+                        <article key={`${medicine.name}-${medicine.dosage}-${medicine.frequency}`} className={styles.listCard}>
                           <strong>{medicine.name}</strong>
                           <span>{[medicine.dosage, medicine.frequency].filter(Boolean).join(" | ") || "Schedule unavailable"}</span>
                           <p>{medicine.purpose || medicine.notes || "No additional notes extracted."}</p>
-                        </article>
-                      ))}
-                    </div>
-                  )}
-                </section>
-
-                <section className={joinClassNames(styles.card, styles.detailCard)}>
-                  <div className={styles.detailHead}>
-                    <h3>Health Alerts</h3>
-                    <span>{ruleAlerts.length}</span>
-                  </div>
-                  {ruleAlerts.length === 0 ? (
-                    <div className={styles.emptyInline}>No rule-based alerts generated.</div>
-                  ) : (
-                    <div className={styles.stackList}>
-                      {ruleAlerts.map((alert) => (
-                        <article key={`${alert.title}-${alert.reason}`} className={styles.listCard}>
-                          <div className={styles.listCardHead}>
-                            <strong>{alert.title}</strong>
-                            <span className={joinClassNames(styles.severityBadge, getSeverityClassName(alert.severity))}>
-                              {formatLabel(alert.severity)}
-                            </span>
-                          </div>
-                          <p>{alert.reason}</p>
-                          <small>{alert.recommendation}</small>
+                          {"source" in medicine && medicine.source === "ocr" ? (
+                            <small>Recovered directly from OCR structure because AI medicine extraction was empty.</small>
+                          ) : null}
                         </article>
                       ))}
                     </div>
@@ -800,15 +1120,15 @@ export default function WorkspaceShell({
 
                 <section className={joinClassNames(styles.card, styles.detailCard)}>
                   <div className={styles.detailHead}>
-                    <h3>Precautions and Follow-up</h3>
+                    <h3>Precautions</h3>
                     <span>Safety-first</span>
                   </div>
                   <div className={styles.bulletGrid}>
                     <div className={styles.bulletCard}>
                       <strong>Precautions</strong>
-                      {analysis?.precautions?.length ? (
+                      {displayPrecautions.length ? (
                         <ul>
-                          {analysis.precautions.map((item) => (
+                          {displayPrecautions.map((item) => (
                             <li key={item}>{item}</li>
                           ))}
                         </ul>
@@ -817,11 +1137,11 @@ export default function WorkspaceShell({
                       )}
                     </div>
                     <div className={styles.bulletCard}>
-                      <strong>Questions to ask</strong>
-                      {analysis?.followUpQuestions?.length ? (
-                        <ul>
-                          {analysis.followUpQuestions.map((item) => (
-                            <li key={item}>{item}</li>
+                        <strong>Questions to ask</strong>
+                        {analysis?.followUpQuestions?.length ? (
+                          <ul>
+                            {analysis.followUpQuestions.map((item) => (
+                              <li key={item}>{item}</li>
                           ))}
                         </ul>
                       ) : (
@@ -851,6 +1171,7 @@ export default function WorkspaceShell({
                             <th>Value</th>
                             <th>Reference</th>
                             <th>Status</th>
+                            <th>Meaning</th>
                           </tr>
                         </thead>
                         <tbody>
@@ -864,6 +1185,7 @@ export default function WorkspaceShell({
                                   {formatLabel(test.status)}
                                 </span>
                               </td>
+                              <td>{test.explanation || "No interpretation available."}</td>
                             </tr>
                           ))}
                         </tbody>
@@ -884,7 +1206,10 @@ export default function WorkspaceShell({
           )}
         </section>
 
-        <section className={joinClassNames(styles.pageSection, activePage === "upload" ? styles.pageSectionActive : undefined)}>
+        <section
+          ref={activePage === "upload" ? activeSectionRef : null}
+          className={joinClassNames(styles.pageSection, activePage === "upload" ? styles.pageSectionActive : undefined)}
+        >
           <div className={styles.sectionHeader}>
             <div>
               <div className={joinClassNames(styles.sectionTitle, styles.serif)}>Upload Report</div>
@@ -955,7 +1280,10 @@ export default function WorkspaceShell({
           </div>
         </section>
 
-        <section className={joinClassNames(styles.pageSection, activePage === "trends" ? styles.pageSectionActive : undefined)}>
+        <section
+          ref={activePage === "trends" ? activeSectionRef : null}
+          className={joinClassNames(styles.pageSection, activePage === "trends" ? styles.pageSectionActive : undefined)}
+        >
           <div className={styles.sectionHeader}>
             <div>
               <div className={joinClassNames(styles.sectionTitle, styles.serif)}>Health Trends</div>
@@ -966,7 +1294,10 @@ export default function WorkspaceShell({
           <WorkspaceHealthTrendsPanel authorizedFetchJson={authorizedFetchJson} reports={reports} />
         </section>
 
-        <section className={joinClassNames(styles.pageSection, activePage === "compare" ? styles.pageSectionActive : undefined)}>
+        <section
+          ref={activePage === "compare" ? activeSectionRef : null}
+          className={joinClassNames(styles.pageSection, activePage === "compare" ? styles.pageSectionActive : undefined)}
+        >
           <div className={styles.sectionHeader}>
             <div>
               <div className={joinClassNames(styles.sectionTitle, styles.serif)}>Compare Reports</div>
@@ -977,7 +1308,10 @@ export default function WorkspaceShell({
           <WorkspaceReportComparisonPanel authorizedFetchJson={authorizedFetchJson} reports={reports} selectedReportId={selectedReportId} />
         </section>
 
-        <section className={joinClassNames(styles.pageSection, activePage === "reminders" ? styles.pageSectionActive : undefined)}>
+        <section
+          ref={activePage === "reminders" ? activeSectionRef : null}
+          className={joinClassNames(styles.pageSection, activePage === "reminders" ? styles.pageSectionActive : undefined)}
+        >
           <div className={styles.sectionHeader}>
             <div>
               <div className={joinClassNames(styles.sectionTitle, styles.serif)}>Medicine Reminders</div>
@@ -990,142 +1324,461 @@ export default function WorkspaceShell({
           />
         </section>
 
-        <section className={joinClassNames(styles.pageSection, activePage === "chat" ? styles.pageSectionActive : undefined)}>
-          <div className={styles.sectionHeader}>
-            <div>
-              <div className={joinClassNames(styles.sectionTitle, styles.serif)}>Report Chat</div>
-              <div className={styles.sectionSubtitle}>Ask about report findings, trends, or symptoms like fever, headache, or cough once the selected report has been processed.</div>
-            </div>
-            <span className={styles.chatCount}>{chatMessages.length} messages</span>
-          </div>
+        <section
+          ref={activePage === "chat" ? activeSectionRef : null}
+          className={joinClassNames(
+            styles.pageSection,
+            styles.chatPageSection,
+            activePage === "chat" ? styles.pageSectionActive : undefined
+          )}
+        >
+          <div className={styles.chatViewport}>
+            <div className={styles.chatPageHeader}>
+              <div className={styles.chatPageIntro}>
+                <div className={styles.chatEyebrow}>Grounded medical assistant</div>
+                <div className={joinClassNames(styles.chatPageTitle, styles.serif)}>AI Assistant</div>
+                <div className={styles.chatPageSubtitle}>
+                  Ask follow-up questions about your report findings, medicines, test values, or symptoms while keeping the same grounded chat workflow.
+                </div>
+                <div className={styles.chatHeroTags}>
+                  {chatScopeBadges.map((item) => (
+                    <span key={item} className={styles.chatHeroTag}>
+                      {item}
+                    </span>
+                  ))}
+                </div>
+              </div>
 
-          <div className={joinClassNames(styles.card, styles.chatCard)}>
-            {!selectedReport ? (
-              <div className={styles.chatEmptyState}>Select a report to start asking about medicines, values, report sections, or symptoms.</div>
-            ) : reportLoading ? (
-              <div className={styles.chatEmptyState}>Loading report chat context...</div>
-            ) : (
-              <>
-                <div className={styles.chatReportMeta}>
-                  <strong>{selectedReport.title || selectedReport.original_filename}</strong>
-                  <span>{formatShortDate(selectedReport.created_at)}</span>
+              <div className={styles.chatHeroCard}>
+                <div className={styles.chatHeroCardEyebrow}>
+                  {selectedReport ? "Loaded report" : "Workspace glance"}
+                </div>
+                <div className={styles.chatHeroCardTitle}>
+                  {selectedReport ? getReportDisplayName(selectedReport) : "Chat workspace overview"}
+                </div>
+                <div className={styles.chatHeroCardMeta}>
+                  {selectedReport
+                    ? `${formatShortDate(selectedReport.created_at)} - ${
+                        selectedReport.analysis_json
+                          ? "Structured analysis is ready for grounded follow-up questions."
+                          : "Analysis is still processing before chat can answer."
+                      }`
+                    : reports.length
+                      ? "Pick a saved report to ask grounded questions about findings, medicines, or symptoms."
+                      : "Upload a report to unlock a report-grounded assistant conversation."}
                 </div>
 
-                <div className={styles.chatArea}>
-                  {chatMessages.length === 0 ? (
-                    <div className={styles.chatEmpty}>No messages yet - ask about a medicine, test value, report section, or symptoms like fever or headache.</div>
-                  ) : (
-                    chatMessages.map((message: ChatMessageRecord) => (
-                      <article
-                        key={message.id}
+                <div className={styles.chatHeroStats}>
+                  {chatHeroStats.map((item) => (
+                    <div key={item.label} className={styles.chatHeroStat}>
+                      <span className={styles.chatHeroStatValue}>{item.value}</span>
+                      <span className={styles.chatHeroStatLabel}>{item.label}</span>
+                      <span className={styles.chatHeroStatHint}>{item.hint}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+
+            <div className={styles.chatTopRow}>
+              <div
+                ref={reportSelectorRef}
+                className={joinClassNames(
+                  styles.chatReportSelector,
+                  reportMenuOpen ? styles.chatReportSelectorOpen : undefined
+                )}
+              >
+                <button
+                  type="button"
+                  className={styles.chatReportTrigger}
+                  onClick={() => {
+                    if (reports.length) {
+                      setReportMenuOpen((open) => !open);
+                    }
+                  }}
+                  aria-expanded={reportMenuOpen}
+                  aria-haspopup="listbox"
+                  disabled={!reports.length}
+                >
+                  <FileIcon className={styles.chatReportTriggerIcon} />
+                  <span className={styles.chatReportTriggerText}>
+                    {selectedReport ? getReportDisplayName(selectedReport) : reports.length ? "Select a report" : "No reports available"}
+                  </span>
+                  <span className={styles.chatReportChevron} aria-hidden="true">
+                    v
+                  </span>
+                </button>
+
+                {reportMenuOpen && reports.length ? (
+                  <div className={styles.chatReportDropdown} role="listbox" aria-label="Select report for chat">
+                    {reports.map((report) => {
+                      const isActive = report.id === selectedReportId;
+
+                      return (
+                        <button
+                          key={report.id}
+                          type="button"
+                          className={joinClassNames(
+                            styles.chatReportOption,
+                            isActive ? styles.chatReportOptionActive : undefined
+                          )}
+                          onClick={() => {
+                            onSelectReport(report.id);
+                            setReportMenuOpen(false);
+                          }}
+                        >
+                          <span className={styles.chatReportOptionDot} aria-hidden="true" />
+                          <span className={styles.chatReportOptionBody}>
+                            <span className={styles.chatReportOptionMain}>{getReportDisplayName(report)}</span>
+                            <span className={styles.chatReportOptionMeta}>
+                              {formatShortDate(report.created_at)} - {formatLabel(report.report_status)}
+                            </span>
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                ) : null}
+              </div>
+
+              <span className={styles.chatCount}>
+                {chatMessages.length} message{chatMessages.length === 1 ? "" : "s"}
+              </span>
+            </div>
+
+            <div className={joinClassNames(styles.card, styles.chatCard)}>
+              {!selectedReport ? (
+                <div className={styles.chatEmptyState}>
+                  Select a report to start asking about medicines, values, report sections, or symptoms.
+                </div>
+              ) : reportLoading ? (
+                <div className={styles.chatEmptyState}>Loading report chat context...</div>
+              ) : null}
+
+              {selectedReport && !reportLoading ? (
+                <>
+                  <div className={styles.chatCardHeader}>
+                    <div className={styles.chatCardHeaderMain}>
+                      <div className={styles.chatHeaderIcon}>
+                        <ChatIcon />
+                      </div>
+                      <div className={styles.chatCardHeading}>
+                        <div className={joinClassNames(styles.chatCardTitle, styles.serif)}>MediScan AI Chat</div>
+                        <div className={styles.chatCardSubtitle}>
+                          {getReportDisplayName(selectedReport)} - {formatShortDate(selectedReport.created_at)}
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className={styles.chatCardHeaderAside}>
+                      <span
                         className={joinClassNames(
-                          styles.chatBubble,
-                          message.role === "assistant" ? styles.chatAssistant : styles.chatUser
+                          styles.chatReadyPill,
+                          selectedReport.analysis_json ? styles.chatReadyPillActive : styles.chatReadyPillPending
                         )}
                       >
-                        <div className={styles.chatBubbleHead}>
-                          <strong>{message.role === "assistant" ? "AI" : "You"}</strong>
-                          <span>{formatShortDate(message.created_at)}</span>
+                        <span className={styles.chatReadyDot} aria-hidden="true" />
+                        {selectedReport.analysis_json ? "AI Ready" : "Analysis pending"}
+                      </span>
+                    </div>
+                  </div>
+
+                  <div className={styles.chatCardBody}>
+                    <div className={styles.chatWorkspaceGrid}>
+                      <div className={styles.chatConversationColumn}>
+                        <div className={styles.chatConversationHeader}>
+                          <div className={styles.chatConversationEyebrow}>Conversation thread</div>
+                          <div className={styles.chatConversationHint}>
+                            {selectedReport.analysis_json
+                              ? "Replies stay anchored to OCR text, extracted findings, and structured analysis from this report."
+                              : "Analysis needs to finish before report-grounded follow-up replies can be generated."}
+                          </div>
                         </div>
-                        <p>{message.message}</p>
-                        {message.role === "assistant" ? (
-                          <>
-                            <div className={styles.chatBubbleActions}>
-                              <button
-                                type="button"
-                                className={styles.speakButton}
-                                disabled={humanizingMessageId === message.id}
-                                onClick={() => onHumanizeMessage(message.id, message.message)}
-                              >
-                                {humanizingMessageId === message.id
-                                  ? "Humanizing..."
-                                  : humanizedMessages[message.id]
-                                    ? "Hide humanized"
-                                    : "Humanize"}
-                              </button>
-                              <button
-                                type="button"
-                                className={styles.speakButton}
-                                onClick={() => onSpeakMessage(message.id, message.message)}
-                              >
-                                {speakingMessageId === message.id ? "Stop voice" : "Read aloud"}
-                              </button>
+
+                        <div className={styles.chatAreaWrap}>
+                          <div
+                            ref={chatAreaRef}
+                            className={styles.chatArea}
+                            role="log"
+                            aria-live="polite"
+                            aria-relevant="additions text"
+                          >
+                            <div className={styles.chatThread}>
+                              {chatMessages.length === 0 && !chatLoading ? (
+                                <div className={styles.chatEmpty}>
+                                  <span className={styles.chatEmptyBadge}>
+                                    {selectedReport.analysis_json ? "Assistant ready" : "Analysis pending"}
+                                  </span>
+                                  <div className={styles.chatEmptyTitle}>Start with a grounded question</div>
+                                  <p className={styles.chatEmptyText}>
+                                    Ask about a medicine, test value, report section, or symptoms like fever or headache while keeping the selected report in scope.
+                                  </p>
+                                  <div className={styles.chatEmptyPromptGrid}>
+                                    {emptyChatPrompts.map((prompt) => (
+                                      <button
+                                        key={prompt}
+                                        type="button"
+                                        className={styles.chatQuickPrompt}
+                                        onClick={() => handleQuickPromptSelect(prompt)}
+                                        disabled={chatDisabled}
+                                      >
+                                        {prompt}
+                                      </button>
+                                    ))}
+                                  </div>
+                                </div>
+                              ) : chatMessages.length > 0 ? (
+                                chatMessages.map((message: ChatMessageRecord) => (
+                                  <div
+                                    key={message.id}
+                                    className={joinClassNames(
+                                      styles.chatMessageRow,
+                                      message.role === "assistant" ? styles.chatMessageRowAssistant : styles.chatMessageRowUser
+                                    )}
+                                  >
+                                    <div className={styles.chatMessageLabel}>
+                                      <span
+                                        className={joinClassNames(
+                                          styles.chatMessagePill,
+                                          message.role === "assistant"
+                                            ? styles.chatMessagePillAssistant
+                                            : styles.chatMessagePillUser
+                                        )}
+                                      >
+                                        {message.role === "assistant" ? "AI" : "You"}
+                                      </span>
+                                      <span>{message.role === "assistant" ? "MediScan AI" : "You"}</span>
+                                    </div>
+
+                                    <article
+                                      className={joinClassNames(
+                                        styles.chatBubble,
+                                        message.role === "assistant" ? styles.chatAssistant : styles.chatUser
+                                      )}
+                                    >
+                                      <p>{message.message}</p>
+                                      {message.role === "assistant" ? (
+                                        <>
+                                          <div className={styles.chatBubbleActions}>
+                                            <button
+                                              type="button"
+                                              className={styles.speakButton}
+                                              disabled={humanizingMessageId === message.id}
+                                              onClick={() => onHumanizeMessage(message.id, message.message)}
+                                            >
+                                              {humanizingMessageId === message.id
+                                                ? "Humanizing..."
+                                                : humanizedMessages[message.id]
+                                                  ? "Hide humanized"
+                                                  : "Humanize"}
+                                            </button>
+                                            <button
+                                              type="button"
+                                              className={styles.speakButton}
+                                              onClick={() => onSpeakMessage(message.id, message.message)}
+                                            >
+                                              {speakingMessageId === message.id ? "Stop voice" : "Read aloud"}
+                                            </button>
+                                          </div>
+
+                                          {humanizedMessages[message.id] ? (
+                                            <div className={styles.humanizedReply}>
+                                              <strong>Humanized</strong>
+                                              <p>{humanizedMessages[message.id]}</p>
+                                            </div>
+                                          ) : null}
+                                        </>
+                                      ) : null}
+                                    </article>
+
+                                    <div className={styles.chatMessageTime}>{formatDate(message.created_at)}</div>
+                                  </div>
+                                ))
+                              ) : null}
+
+                              {chatLoading ? (
+                                <div className={joinClassNames(styles.chatMessageRow, styles.chatMessageRowAssistant)}>
+                                  <div className={styles.chatMessageLabel}>
+                                    <span className={joinClassNames(styles.chatMessagePill, styles.chatMessagePillAssistant)}>
+                                      AI
+                                    </span>
+                                    <span>MediScan AI</span>
+                                  </div>
+                                  <div
+                                    className={joinClassNames(
+                                      styles.chatBubble,
+                                      styles.chatAssistant,
+                                      styles.chatTypingBubble
+                                    )}
+                                  >
+                                    <span className={styles.chatTypingDot} />
+                                    <span className={styles.chatTypingDot} />
+                                    <span className={styles.chatTypingDot} />
+                                  </div>
+                                </div>
+                              ) : null}
                             </div>
-                            {humanizedMessages[message.id] ? (
-                              <div className={styles.humanizedReply}>
-                                <strong>Humanized</strong>
-                                <p>{humanizedMessages[message.id]}</p>
-                              </div>
-                            ) : null}
-                          </>
+                          </div>
+
+                          {showScrollLatestButton ? (
+                            <button
+                              type="button"
+                              className={styles.chatScrollLatestButton}
+                              onClick={handleScrollToLatest}
+                              aria-label="Scroll to latest message"
+                              title="Scroll to latest message"
+                            >
+                              <svg
+                                className={styles.chatScrollLatestIcon}
+                                viewBox="0 0 24 24"
+                                fill="none"
+                                stroke="currentColor"
+                                strokeWidth="2.2"
+                                aria-hidden="true"
+                              >
+                                <path d="M12 5v14" />
+                                <path d="m6 13 6 6 6-6" />
+                              </svg>
+                            </button>
+                          ) : null}
+                        </div>
+                      </div>
+
+                      <aside className={styles.chatAssistantRail}>
+                        <div className={joinClassNames(styles.supportCard, styles.chatRailCard)}>
+                          <div className={styles.chatRailHeader}>
+                            <div className={styles.chatRailTitle}>Starter prompts</div>
+                            <div className={styles.chatRailText}>
+                              Tap one to seed the composer with a grounded follow-up question.
+                            </div>
+                          </div>
+
+                          <div className={styles.chatQuickPrompts}>
+                            {emptyChatPrompts.map((prompt) => (
+                              <button
+                                key={prompt}
+                                type="button"
+                                className={styles.chatQuickPrompt}
+                                onClick={() => handleQuickPromptSelect(prompt)}
+                                disabled={chatDisabled}
+                              >
+                                {prompt}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+
+                        <div className={joinClassNames(styles.supportCard, styles.chatRailCard)}>
+                          <div className={styles.chatRailHeader}>
+                            <div className={styles.chatRailTitle}>Context in scope</div>
+                            <div className={styles.chatRailText}>
+                              These topics are already present in the loaded report context.
+                            </div>
+                          </div>
+
+                          {chatFocusItems.length ? (
+                            <div className={styles.chatTopicList}>
+                              {chatFocusItems.map((item) => (
+                                <span key={item} className={styles.chatTopicPill}>
+                                  {item}
+                                </span>
+                              ))}
+                            </div>
+                          ) : (
+                            <div className={styles.emptyInline}>No structured context has been extracted yet.</div>
+                          )}
+                        </div>
+
+                        <div className={styles.chatSupportGrid}>
+                          <div className={joinClassNames(styles.supportCard, styles.chatSupportCard)}>
+                            <div className={styles.chatSupportTitle}>Precautions</div>
+                            {displayPrecautions.length ? (
+                              <ul>
+                                {displayPrecautions.map((item) => (
+                                  <li key={item}>{item}</li>
+                                ))}
+                              </ul>
+                            ) : (
+                              <div className={styles.emptyInline}>No precautions extracted yet.</div>
+                            )}
+                          </div>
+
+                          <div className={joinClassNames(styles.supportCard, styles.chatSupportCard)}>
+                            <div className={styles.chatSupportTitle}>Questions to ask</div>
+                            {analysis?.followUpQuestions?.length ? (
+                              <ul>
+                                {analysis.followUpQuestions.map((item) => (
+                                  <li key={item}>{item}</li>
+                                ))}
+                              </ul>
+                            ) : (
+                              <div className={styles.emptyInline}>No follow-up questions extracted yet.</div>
+                            )}
+                          </div>
+                        </div>
+
+                        <div className={joinClassNames(styles.infoBox, styles.infoAmber, styles.chatInfoBox)}>
+                          <AlertIcon />
+                          <span>
+                            {insights?.safetyNotice || "This tool provides educational insights and cannot replace medical diagnosis, emergency care, or prescription decisions."}
+                          </span>
+                        </div>
+
+                        {!selectedReport.analysis_json ? (
+                          <div className={styles.voiceNote}>
+                            The report needs structured analysis before chat can answer follow-up questions.
+                          </div>
                         ) : null}
-                      </article>
-                    ))
-                  )}
-                </div>
 
-                <div className={styles.chatSupportGrid}>
-                  <div className={styles.supportCard}>
-                    <div className={styles.cardTitle}>Precautions</div>
-                    {analysis?.precautions?.length ? (
-                      <ul>
-                        {analysis.precautions.map((item) => (
-                          <li key={item}>{item}</li>
-                        ))}
-                      </ul>
-                    ) : (
-                      <div className={styles.emptyInline}>No precautions extracted yet.</div>
-                    )}
+                        {speechNotice ? <div className={styles.voiceNote}>{speechNotice}</div> : null}
+                      </aside>
+                    </div>
                   </div>
 
-                  <div className={styles.supportCard}>
-                    <div className={styles.cardTitle}>Questions to ask</div>
-                    {analysis?.followUpQuestions?.length ? (
-                      <ul>
-                        {analysis.followUpQuestions.map((item) => (
-                          <li key={item}>{item}</li>
-                        ))}
-                      </ul>
-                    ) : (
-                      <div className={styles.emptyInline}>No follow-up questions extracted yet.</div>
-                    )}
-                  </div>
-                </div>
-
-                <div className={joinClassNames(styles.infoBox, styles.infoAmber)}>
-                  <AlertIcon />
-                  {insights?.safetyNotice || "This tool provides educational insights and cannot replace medical diagnosis, emergency care, or prescription decisions."}
-                </div>
-
-                <form className={styles.chatInputRow} onSubmit={onAskQuestion}>
-                  <button
-                    type="button"
-                    className={joinClassNames(styles.chatMic, listening ? styles.chatMicActive : undefined)}
-                    onClick={onMicInput}
-                    disabled={chatLoading || !selectedReport.analysis_json}
-                    aria-label={listening ? "Stop voice input" : "Start voice input"}
-                  >
-                    <MicIcon />
-                  </button>
-                  <input
-                    className={styles.chatInput}
-                    value={chatInput}
-                    onChange={(event) => onChatInputChange(event.target.value)}
-                    placeholder="Ask about a report finding or share symptoms like fever, headache, or cough..."
-                    disabled={chatLoading || !selectedReport.analysis_json}
-                  />
-                  <button type="submit" className={styles.btnPrimary} disabled={chatLoading || !selectedReport.analysis_json}>
-                    {chatLoading ? "Thinking..." : "Ask"}
-                  </button>
-                </form>
-
-                {!selectedReport.analysis_json ? (
-                  <div className={styles.voiceNote}>The report needs structured analysis before chat can answer follow-up questions.</div>
-                ) : null}
-
-                {speechNotice ? <div className={styles.voiceNote}>{speechNotice}</div> : null}
-              </>
-            )}
+                  <form className={styles.chatInputRow} onSubmit={onAskQuestion}>
+                    <button
+                      type="button"
+                      className={joinClassNames(styles.chatMic, listening ? styles.chatMicActive : undefined)}
+                      onClick={onMicInput}
+                      disabled={chatDisabled}
+                      aria-label={listening ? "Stop voice input" : "Start voice input"}
+                    >
+                      <MicIcon />
+                    </button>
+                    <div className={styles.chatInputWrap}>
+                      <input
+                        ref={chatInputRef}
+                        className={styles.chatInput}
+                        value={chatInput}
+                        onChange={(event) => onChatInputChange(event.target.value)}
+                        placeholder="Ask about a medicine, test value, report section, or symptom..."
+                        disabled={chatDisabled}
+                      />
+                      <div className={styles.chatInputHint}>
+                        <span>
+                          {selectedReport
+                            ? `Context: ${getReportDisplayName(selectedReport)}`
+                            : "Select a report to unlock grounded chat"}
+                        </span>
+                        <span>
+                          {listening
+                            ? "Listening for voice input..."
+                            : chatDisabled
+                              ? "Follow-up replies unlock after analysis is ready."
+                              : "Press Enter to send."}
+                        </span>
+                      </div>
+                    </div>
+                    <button type="submit" className={styles.chatSendButton} disabled={chatDisabled}>
+                      <span>{chatLoading ? "Thinking..." : "Ask"}</span>
+                      <span className={styles.chatSendArrow} aria-hidden="true">
+                        {"->"}
+                      </span>
+                    </button>
+                  </form>
+                </>
+              ) : null}
+            </div>
           </div>
         </section>
       </main>

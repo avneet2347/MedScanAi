@@ -57,12 +57,32 @@ export default function AuthPageClient({ mode }: { mode: AuthMode }) {
   );
 
   useEffect(() => {
+    if (!initialEmail) {
+      return;
+    }
+
+    setEmail(initialEmail);
+    setPendingVerificationEmail((current) => current || initialEmail);
+  }, [initialEmail]);
+
+  useEffect(() => {
     if (!confirmed) {
       return;
     }
 
-    router.replace(buildAuthHref(mode, initialEmail));
-  }, [confirmed, initialEmail, mode, router]);
+    setNotice({
+      type: "success",
+      text: "Email confirmed successfully. Your account is ready.",
+    });
+  }, [confirmed]);
+
+  useEffect(() => {
+    if (!confirmed) {
+      return;
+    }
+
+    router.replace(buildAuthHref("login", initialEmail));
+  }, [confirmed, initialEmail, router]);
 
   useEffect(() => {
     let active = true;

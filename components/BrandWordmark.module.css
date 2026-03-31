@@ -1,0 +1,15 @@
+.root {
+  display: inline-flex;
+  align-items: baseline;
+  gap: var(--brand-wordmark-gap, 0.18rem);
+  font-size: var(--brand-wordmark-size, 1.3rem);
+  font-weight: var(--brand-wordmark-weight, 400);
+  letter-spacing: var(--brand-wordmark-letter-spacing, -0.03em);
+  line-height: 1;
+  color: var(--brand-wordmark-base, var(--ink, var(--text, currentColor)));
+  white-space: nowrap;
+}
+
+.accent {
+  color: var(--brand-wordmark-accent, #0369a1);
+}

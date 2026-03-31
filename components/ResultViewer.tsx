@@ -634,7 +634,7 @@ export default function ResultViewer() {
           <div className={styles.stickyHeader}>
           <div className={styles.headerRow}>
             <div className={styles.headerText}>
-              <p className={styles.eyebrow}>MedScanAI Result</p>
+              <p className={styles.eyebrow}>MediScan AI Result</p>
               <h3 className={styles.title}>{currentResult.filename}</h3>
               <div className={styles.metaLine}>
                 <span>{formatDate(currentResult.createdAt)}</span>

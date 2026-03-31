@@ -1,4 +1,5 @@
 import Link from "next/link";
+import BrandWordmark from "@/components/BrandWordmark";
 import styles from "./InfoPage.module.css";
 
 type InfoSection = {
@@ -19,7 +20,9 @@ export default function InfoPage({ title, intro, sections }: InfoPageProps) {
         <Link href="/" className={styles.backLink}>
           Back to home
         </Link>
-        <p className={styles.eyebrow}>MediScan AI</p>
+        <p className={styles.eyebrow}>
+          <BrandWordmark />
+        </p>
         <h1 className={styles.title}>{title}</h1>
         <p className={styles.intro}>{intro}</p>
 

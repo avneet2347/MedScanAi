@@ -6,8 +6,28 @@ type IconProps = {
 
 export function LogoIcon({ className }: IconProps) {
   return (
-    <svg className={className} viewBox="0 0 24 24" aria-hidden="true">
-      <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 14H9V8h2v8zm4 0h-2V8h2v8z" />
+    <svg className={className} viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <defs>
+        <linearGradient id="medscan-logo-line" x1="4" y1="4" x2="20" y2="20" gradientUnits="userSpaceOnUse">
+          <stop stopColor="#A855F7" />
+          <stop offset="0.55" stopColor="#EC4899" />
+          <stop offset="1" stopColor="#22D3EE" />
+        </linearGradient>
+        <linearGradient id="medscan-logo-node" x1="7" y1="6" x2="17" y2="18" gradientUnits="userSpaceOnUse">
+          <stop stopColor="#22D3EE" />
+          <stop offset="1" stopColor="#0EA5E9" />
+        </linearGradient>
+      </defs>
+      <path
+        d="M7.25 6.75c1.3 0 2.35 1.05 2.35 2.35 0 .46-.13.89-.36 1.25l2.02 2.22a2.35 2.35 0 0 1 1.12-.28c.35 0 .68.08.98.21l1.62-2.15a2.37 2.37 0 0 1-.52-1.48 2.35 2.35 0 1 1 4.08 1.58l-2.03 2.7c.15.31.24.67.24 1.05a2.35 2.35 0 0 1-4.34 1.25l-2.01-2.21c-.35.18-.74.28-1.15.28a2.35 2.35 0 0 1-1.14-4.4l-.23-1.52H7.6A1.85 1.85 0 0 1 5.75 7.9V6.75h1.5Z"
+        stroke="url(#medscan-logo-line)"
+        strokeWidth="1.7"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+      <circle cx="7.25" cy="9.1" r="1.15" fill="url(#medscan-logo-node)" />
+      <circle cx="12.4" cy="14.35" r="1.1" fill="url(#medscan-logo-node)" />
+      <circle cx="16.8" cy="8.85" r="1.15" fill="url(#medscan-logo-node)" />
     </svg>
   );
 }

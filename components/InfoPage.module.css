@@ -29,11 +29,15 @@
 
 .eyebrow {
   margin: 0;
-  color: #7dd3fc;
-  font-size: 12px;
-  font-weight: 800;
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
+  display: inline-flex;
+  align-items: center;
+  color: #f0f6ff;
+  --brand-wordmark-base: #f0f6ff;
+  --brand-wordmark-accent: #38bdf8;
+  --brand-wordmark-size: 1.3rem;
+  --brand-wordmark-weight: 400;
+  --brand-wordmark-letter-spacing: -0.03em;
+  --brand-wordmark-gap: 0.18rem;
 }
 
 .title {

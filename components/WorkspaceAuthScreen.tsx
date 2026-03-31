@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
+import BrandWordmark from "@/components/BrandWordmark";
 import {
   THEME_CHANGE_EVENT,
   THEME_STORAGE_KEY,
@@ -181,7 +182,10 @@ export default function WorkspaceAuthScreen({
                     <span>Back to Home</span>
                   </Link>
                 </div>
-                <div className="form-eyebrow">🏥 MediScan AI</div>
+                <div className="form-eyebrow">
+                  <span aria-hidden="true">🩺</span>
+                  <BrandWordmark />
+                </div>
                 <div className="card-body">
                 <h1 className="form-title">
                   {isSignupMode ? <>Create your<br />account</> : <>Sign in to your<br />account</>}
@@ -568,16 +572,26 @@ export default function WorkspaceAuthScreen({
           background: var(--blue-lt);
           border: 1px solid var(--blue-brd);
           border-radius: 999px;
+          box-shadow: 0 8px 18px rgba(14, 165, 233, 0.08);
+        }
+
+        .verification-pill {
           font-size: 0.68rem;
           font-weight: 800;
           letter-spacing: 0.14em;
           text-transform: uppercase;
           color: var(--blue);
-          box-shadow: 0 8px 18px rgba(14, 165, 233, 0.08);
         }
 
         .form-eyebrow {
           margin: 0 0 1.35rem;
+          color: var(--ink);
+          --brand-wordmark-base: var(--ink);
+          --brand-wordmark-accent: var(--accent);
+          --brand-wordmark-size: 1.3rem;
+          --brand-wordmark-weight: 400;
+          --brand-wordmark-letter-spacing: -0.03em;
+          --brand-wordmark-gap: 0.18rem;
         }
 
         .form-title,
