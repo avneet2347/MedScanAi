@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { getBrowserSupabaseClient } from "@/lib/supabase";
 import {
@@ -55,6 +55,8 @@ export default function AuthPageClient({ mode }: { mode: AuthMode }) {
         }
       : null
   );
+  const authSubmitInFlightRef = useRef(false);
+  const resendInFlightRef = useRef(false);
 
   useEffect(() => {
     if (!initialEmail) {
@@ -141,6 +143,12 @@ export default function AuthPageClient({ mode }: { mode: AuthMode }) {
 
   async function handleAuthSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
+
+    if (authSubmitInFlightRef.current) {
+      return;
+    }
+
+    authSubmitInFlightRef.current = true;
     setAuthLoading(true);
     setAuthResult(null);
     setNotice(null);
@@ -217,11 +225,16 @@ export default function AuthPageClient({ mode }: { mode: AuthMode }) {
         text: message,
       });
     } finally {
+      authSubmitInFlightRef.current = false;
       setAuthLoading(false);
     }
   }
 
   async function handleResendVerification() {
+    if (resendInFlightRef.current) {
+      return;
+    }
+
     const verificationEmail = pendingVerificationEmail || email.trim().toLowerCase();
 
     if (!verificationEmail) {
@@ -232,6 +245,7 @@ export default function AuthPageClient({ mode }: { mode: AuthMode }) {
       return;
     }
 
+    resendInFlightRef.current = true;
     setResendLoading(true);
     setNotice(null);
 
@@ -268,6 +282,7 @@ export default function AuthPageClient({ mode }: { mode: AuthMode }) {
             : "Unable to resend verification email.",
       });
     } finally {
+      resendInFlightRef.current = false;
       setResendLoading(false);
     }
   }

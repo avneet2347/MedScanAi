@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { setAuthCookies } from "@/lib/auth-cookies";
 import { getErrorMessage, getErrorStatus, jsonError, validateEmail, validatePassword } from "@/lib/api-utils";
-import { buildSignupConfirmationRedirect, isEmailConfirmationError } from "@/lib/auth-utils";
+import { isEmailConfirmationError } from "@/lib/auth-utils";
 import { ensureUserProfile } from "@/lib/reports";
 import {
   createSupabaseAuthClient,
@@ -31,19 +31,8 @@ export async function POST(request: Request) {
     });
 
     if (isEmailConfirmationError(error)) {
-      const resendRedirect = buildSignupConfirmationRedirect(request);
-      const { error: resendError } = await supabase.auth.resend({
-        type: "signup",
-        email,
-        options: {
-          emailRedirectTo: resendRedirect,
-        },
-      });
-
       return jsonError(
-        resendError
-          ? "Please confirm your email address before logging in."
-          : "Please confirm your email address before logging in. A new confirmation email has been sent.",
+        "Please confirm your email address before logging in. Use resend verification if you need another confirmation email.",
         403
       );
     }
@@ -53,7 +42,10 @@ export async function POST(request: Request) {
     }
 
     if (!data.user.email_confirmed_at) {
-      return jsonError("Please confirm your email address before logging in.", 403);
+      return jsonError(
+        "Please confirm your email address before logging in. Use resend verification if you need another confirmation email.",
+        403
+      );
     }
 
     const userClient = createSupabaseUserClient(data.session.access_token);

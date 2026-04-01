@@ -51,7 +51,6 @@ type Props = {
   dark: boolean;
   notice: WorkspaceNotice;
   profileName: string;
-  userEmail: string;
   avatarText: string;
   file: File | null;
   processing: boolean;
@@ -314,6 +313,110 @@ function buildChatQuickPrompts(analysis?: MedicalAnalysis | null) {
   ]).slice(0, 4);
 }
 
+function normalizeSuggestionQuery(value: string) {
+  return value
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function scoreSuggestionMatch(query: string, candidate: string) {
+  const normalizedCandidate = normalizeSuggestionQuery(candidate);
+
+  if (!query || !normalizedCandidate) {
+    return 0;
+  }
+
+  let score = 0;
+
+  if (normalizedCandidate.startsWith(query)) {
+    score += 12;
+  }
+
+  if (` ${normalizedCandidate} `.includes(` ${query} `)) {
+    score += 10;
+  } else if (normalizedCandidate.includes(query)) {
+    score += 6;
+  }
+
+  const queryTokens = query.split(" ").filter(Boolean);
+  const candidateTokens = normalizedCandidate.split(" ").filter(Boolean);
+  let matchedTokenCount = 0;
+
+  for (const token of queryTokens) {
+    const isMatched = candidateTokens.some(
+      (candidateToken) => candidateToken === token || candidateToken.startsWith(token)
+    );
+
+    if (isMatched) {
+      matchedTokenCount += 1;
+    }
+  }
+
+  score += matchedTokenCount * 4;
+
+  if (queryTokens.length > 0 && matchedTokenCount === queryTokens.length) {
+    score += 4;
+  }
+
+  return score;
+}
+
+function buildDynamicChatSuggestions(payload: {
+  query: string;
+  quickPrompts: string[];
+  followUpQuestions: string[];
+  medicineNames: string[];
+  testNames: string[];
+  documentType?: string | null;
+}) {
+  const trimmedQuery = payload.query.trim().replace(/\s+/g, " ");
+  const normalizedQuery = normalizeSuggestionQuery(trimmedQuery);
+
+  if (!normalizedQuery) {
+    return [];
+  }
+
+  const directSuggestions =
+    normalizedQuery.length >= 2
+      ? [
+          `Explain ${trimmedQuery} in simple terms.`,
+          `Is ${trimmedQuery} important in this report?`,
+          `What should I ask my doctor about ${trimmedQuery}?`,
+        ]
+      : [];
+  const contextSuggestions = dedupeStrings([
+    ...payload.quickPrompts,
+    ...payload.followUpQuestions.slice(0, 5),
+    ...payload.medicineNames.slice(0, 4).flatMap((name) => [
+      `What is ${name} used for?`,
+      `How should I take ${name}?`,
+      `What precautions should I follow with ${name}?`,
+    ]),
+    ...payload.testNames.slice(0, 4).flatMap((name) => [
+      `Explain my ${name} result.`,
+      `Is ${name} concerning in this report?`,
+    ]),
+    payload.documentType
+      ? `Summarize the key findings from this ${payload.documentType}.`
+      : null,
+    "Summarize this report in simple language.",
+    "What should I ask my doctor next?",
+  ]);
+
+  return dedupeStrings([...directSuggestions, ...contextSuggestions])
+    .filter((candidate) => normalizeSuggestionQuery(candidate) !== normalizedQuery)
+    .map((candidate) => ({
+      candidate,
+      score: scoreSuggestionMatch(normalizedQuery, candidate),
+    }))
+    .filter((item) => item.score > 0)
+    .sort((left, right) => right.score - left.score || left.candidate.length - right.candidate.length)
+    .slice(0, 5)
+    .map((item) => item.candidate);
+}
+
 function shouldShowScrollLatestButton(element: HTMLDivElement) {
   return element.scrollHeight - element.clientHeight - element.scrollTop > CHAT_SCROLL_LATEST_THRESHOLD;
 }
@@ -331,7 +434,6 @@ export default function WorkspaceShell({
   dark,
   notice,
   profileName,
-  userEmail,
   avatarText,
   file,
   processing,
@@ -400,6 +502,7 @@ export default function WorkspaceShell({
   const activeSectionRef = useRef<HTMLElement | null>(null);
   const shouldStickChatToBottomRef = useRef(true);
   const [showScrollLatestButton, setShowScrollLatestButton] = useState(false);
+  const [activeChatSuggestionIndex, setActiveChatSuggestionIndex] = useState(0);
   const quickPrompts = buildChatQuickPrompts(analysis);
   const chatDisabled = chatLoading || !selectedReport?.analysis_json;
   const latestMessageId = chatMessages[chatMessages.length - 1]?.id || null;
@@ -468,6 +571,20 @@ export default function WorkspaceShell({
         "Which findings should I discuss with a doctor?",
         "What precautions should I follow next?",
       ];
+  const chatInputSuggestions = buildDynamicChatSuggestions({
+    query: chatInput,
+    quickPrompts: emptyChatPrompts,
+    followUpQuestions: analysis?.followUpQuestions || [],
+    medicineNames: selectedMedicines.map((item) => item.name),
+    testNames: selectedTests.map((item) => item.name),
+    documentType: analysis?.documentType,
+  });
+  const hasChatInputSuggestions =
+    Boolean(chatInput.trim()) && !chatDisabled && chatInputSuggestions.length > 0;
+  const selectedChatSuggestionIndex = chatInputSuggestions.length
+    ? Math.min(activeChatSuggestionIndex, chatInputSuggestions.length - 1)
+    : 0;
+  const chatInputSuggestionsListId = "workspace-chat-input-suggestions";
 
   function handlePageOpen(pageId: WorkspacePageId) {
     onShowPage(pageId);
@@ -582,7 +699,45 @@ export default function WorkspaceShell({
 
   function handleQuickPromptSelect(prompt: string) {
     onChatInputChange(prompt);
+    setActiveChatSuggestionIndex(0);
     chatInputRef.current?.focus();
+  }
+
+  function handleChatInputChange(value: string) {
+    setActiveChatSuggestionIndex(0);
+    onChatInputChange(value);
+  }
+
+  function handleChatInputKeyDown(event: React.KeyboardEvent<HTMLInputElement>) {
+    if (!hasChatInputSuggestions) {
+      return;
+    }
+
+    if (event.key === "ArrowDown") {
+      event.preventDefault();
+      setActiveChatSuggestionIndex((current) => (current + 1) % chatInputSuggestions.length);
+      return;
+    }
+
+    if (event.key === "ArrowUp") {
+      event.preventDefault();
+      setActiveChatSuggestionIndex((current) =>
+        current === 0 ? chatInputSuggestions.length - 1 : current - 1
+      );
+      return;
+    }
+
+    if (event.key === "Tab" && !event.shiftKey) {
+      event.preventDefault();
+      handleQuickPromptSelect(
+        chatInputSuggestions[selectedChatSuggestionIndex] || chatInputSuggestions[0]
+      );
+      return;
+    }
+
+    if (event.key === "Escape") {
+      setActiveChatSuggestionIndex(0);
+    }
   }
 
   return (
@@ -668,9 +823,17 @@ export default function WorkspaceShell({
             <div className={styles.avatar}>{avatarText}</div>
             <div className={styles.userInfo}>
               <div className={styles.userName}>{profileName}</div>
-              <div className={styles.userEmail}>{userEmail}</div>
             </div>
           </div>
+          <button
+            type="button"
+            className={joinClassNames(styles.navItem, styles.sidebarSignOutButton)}
+            onClick={onSignOut}
+            aria-label="Sign out"
+          >
+            <SignOutIcon className={styles.navIcon} />
+            Sign Out
+          </button>
         </div>
       </aside>
 
@@ -687,9 +850,6 @@ export default function WorkspaceShell({
         </span>
         <div className={styles.topbarActions}>
           <button type="button" className={styles.themeToggle} onClick={onToggleTheme} aria-label={dark ? "Switch to light theme" : "Switch to dark theme"} />
-          <button type="button" className={styles.iconBtn} onClick={onSignOut} aria-label="Sign out">
-            <SignOutIcon />
-          </button>
         </div>
       </header>
 
@@ -1750,10 +1910,43 @@ export default function WorkspaceShell({
                         ref={chatInputRef}
                         className={styles.chatInput}
                         value={chatInput}
-                        onChange={(event) => onChatInputChange(event.target.value)}
+                        onChange={(event) => handleChatInputChange(event.target.value)}
+                        onKeyDown={handleChatInputKeyDown}
                         placeholder="Ask about a medicine, test value, report section, or symptom..."
                         disabled={chatDisabled}
+                        aria-autocomplete="list"
+                        aria-controls={hasChatInputSuggestions ? chatInputSuggestionsListId : undefined}
                       />
+                      {hasChatInputSuggestions ? (
+                        <div
+                          id={chatInputSuggestionsListId}
+                          className={styles.chatInputSuggestions}
+                          role="listbox"
+                          aria-label="Suggested prompts"
+                        >
+                          {chatInputSuggestions.map((suggestion, index) => (
+                            <button
+                              key={suggestion}
+                              type="button"
+                              role="option"
+                              aria-selected={index === selectedChatSuggestionIndex}
+                              className={joinClassNames(
+                                styles.chatInputSuggestion,
+                                index === selectedChatSuggestionIndex
+                                  ? styles.chatInputSuggestionActive
+                                  : undefined
+                              )}
+                              onMouseDown={(event) => {
+                                event.preventDefault();
+                                handleQuickPromptSelect(suggestion);
+                              }}
+                              onMouseEnter={() => setActiveChatSuggestionIndex(index)}
+                            >
+                              {suggestion}
+                            </button>
+                          ))}
+                        </div>
+                      ) : null}
                       <div className={styles.chatInputHint}>
                         <span>
                           {selectedReport

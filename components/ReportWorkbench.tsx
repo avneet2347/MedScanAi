@@ -814,7 +814,6 @@ export default function ReportWorkbench() {
       dark={dark}
       notice={notice}
       profileName={profile?.full_name?.trim() || session.user.email || "MedScan user"}
-      userEmail={session.user.email || ""}
       avatarText={getInitials(profile?.full_name, session.user.email)}
       file={file}
       processing={processing}

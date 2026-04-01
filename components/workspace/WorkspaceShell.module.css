@@ -232,6 +232,9 @@
   margin-top: auto;
   border-top: 1px solid var(--border);
   padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
 }
 
 .userPill {
@@ -280,6 +283,31 @@
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.sidebarUserIdBlock {
+  padding: 0 10px;
+}
+
+.sidebarUserIdLabel {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text3);
+  margin-bottom: 4px;
+}
+
+.sidebarUserIdValue {
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--text2);
+  word-break: break-all;
+}
+
+.sidebarSignOutButton {
+  width: calc(100% - 16px);
+  margin: 0 8px;
 }
 
 .topbar {
@@ -2440,6 +2468,45 @@
 
 .chatInput::placeholder {
   color: var(--text3);
+}
+
+.chatInputSuggestions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.chatInputSuggestion {
+  width: 100%;
+  padding: 10px 14px;
+  border-radius: 16px;
+  border: 1px solid var(--chat-border-soft);
+  background: rgba(255, 255, 255, 0.82);
+  color: var(--text2);
+  text-align: left;
+  font-size: 12.5px;
+  line-height: 1.55;
+  cursor: pointer;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.6);
+  transition: border-color var(--transition), background var(--transition), color var(--transition), transform var(--transition);
+}
+
+.chatInputSuggestion:hover {
+  transform: translateY(-1px);
+  border-color: rgba(14, 165, 233, 0.28);
+  background: rgba(14, 165, 233, 0.1);
+  color: var(--text);
+}
+
+.chatInputSuggestionActive {
+  border-color: rgba(14, 165, 233, 0.32);
+  background: rgba(14, 165, 233, 0.12);
+  color: var(--text);
+  transform: translateY(-1px);
+}
+
+:global(body.dark) .chatInputSuggestion {
+  background: rgba(15, 23, 42, 0.62);
 }
 
 .chatInputHint {
