@@ -142,7 +142,7 @@ export default function ReportWorkbench() {
   const [humanizedMessages, setHumanizedMessages] = useState<Record<string, string>>({});
   const [activePage, setActivePage] = useState<WorkspacePageId>("dashboard");
   const [sidebarOpen, setSidebarOpen] = useState(false);
-  const [dark, setDark] = useState(true);
+  const [dark, setDark] = useState(false);
   const selectedReportIdRef = useRef<string | null>(null);
 
   useEffect(() => {

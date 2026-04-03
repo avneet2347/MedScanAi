@@ -9,12 +9,12 @@ export function LogoIcon({ className }: IconProps) {
     <svg className={className} viewBox="0 0 24 24" fill="none" aria-hidden="true">
       <defs>
         <linearGradient id="medscan-logo-line" x1="4" y1="4" x2="20" y2="20" gradientUnits="userSpaceOnUse">
-          <stop stopColor="#A855F7" />
-          <stop offset="0.55" stopColor="#EC4899" />
-          <stop offset="1" stopColor="#22D3EE" />
+          <stop stopColor="#14B8A6" />
+          <stop offset="0.55" stopColor="#0EA5E9" />
+          <stop offset="1" stopColor="#0369A1" />
         </linearGradient>
         <linearGradient id="medscan-logo-node" x1="7" y1="6" x2="17" y2="18" gradientUnits="userSpaceOnUse">
-          <stop stopColor="#22D3EE" />
+          <stop stopColor="#14B8A6" />
           <stop offset="1" stopColor="#0EA5E9" />
         </linearGradient>
       </defs>

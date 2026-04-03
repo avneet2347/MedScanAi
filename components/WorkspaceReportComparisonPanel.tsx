@@ -504,8 +504,8 @@ export default function WorkspaceReportComparisonPanel({
           justify-content: center;
           border-radius: 999px;
           padding: 8px 12px;
-          border: 1px solid rgba(14, 165, 233, 0.22);
-          background: rgba(14, 165, 233, 0.12);
+          border: 1px solid rgba(74, 140, 110, 0.22);
+          background: rgba(74, 140, 110, 0.12);
           color: var(--ws-accent);
           font-size: 0.76rem;
           font-weight: 700;
@@ -558,8 +558,8 @@ export default function WorkspaceReportComparisonPanel({
         }
 
         .compare-chip.active {
-          border-color: rgba(14, 165, 233, 0.42);
-          box-shadow: inset 0 0 0 1px rgba(14, 165, 233, 0.22);
+          border-color: rgba(74, 140, 110, 0.42);
+          box-shadow: inset 0 0 0 1px rgba(74, 140, 110, 0.22);
         }
 
         .compare-chip span,
@@ -649,7 +649,7 @@ export default function WorkspaceReportComparisonPanel({
         }
 
         .comparison-overview-primary {
-          background: linear-gradient(145deg, rgba(14, 165, 233, 0.14), rgba(255, 255, 255, 0.52));
+          background: linear-gradient(145deg, rgba(74, 140, 110, 0.14), rgba(255, 255, 255, 0.52));
         }
 
         .comparison-overview-card small {
@@ -685,7 +685,7 @@ export default function WorkspaceReportComparisonPanel({
         .difference-card.direction-stable,
         .difference-card.direction-mixed,
         .difference-card.direction-uncertain {
-          background: rgba(14, 165, 233, 0.06);
+          background: rgba(74, 140, 110, 0.06);
         }
 
         .difference-head {

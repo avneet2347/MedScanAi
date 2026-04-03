@@ -1281,7 +1281,7 @@ export default function WorkspaceRemindersPanel({
           margin-bottom: 14px;
           border-radius: 14px;
           padding: 12px 14px;
-          background: rgba(14, 165, 233, 0.12);
+          background: rgba(74, 140, 110, 0.12);
           color: var(--ws-text-soft);
           display: flex;
           align-items: center;
@@ -1361,7 +1361,7 @@ export default function WorkspaceRemindersPanel({
           border: 1px solid var(--ws-border);
           border-radius: 999px;
           padding: 9px 12px;
-          background: rgba(14, 165, 233, 0.1);
+          background: rgba(74, 140, 110, 0.1);
           color: var(--ws-accent);
           font-weight: 700;
           cursor: pointer;
@@ -1431,7 +1431,7 @@ export default function WorkspaceRemindersPanel({
 
         .time-pill {
           color: var(--ws-accent);
-          background: rgba(14, 165, 233, 0.12);
+          background: rgba(74, 140, 110, 0.12);
         }
 
         .helper-text {

@@ -1,6 +1,6 @@
-"use client";
+﻿"use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type CSSProperties, type DragEvent, type MouseEvent } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import BrandWordmark from "@/components/BrandWordmark";
@@ -19,40 +19,71 @@ import {
   setThemePreference,
 } from "@/lib/theme";
 
-/* ─────────────────────────── DATA ─────────────────────────── */
+/* --------------------------- DATA --------------------------- */
 const labValues = [
-  { name: "HbA1c",      value: "8.2%",  ref: "< 5.7%",        status: "HIGH",   color: "#dc2626" },
-  { name: "Hemoglobin", value: "9.4",   ref: "13–17 g/dL",    status: "LOW",    color: "#ea580c" },
-  { name: "Creatinine", value: "0.9",   ref: "0.6–1.2 mg/dL", status: "NORMAL", color: "#16a34a" },
-  { name: "TSH",        value: "6.8",   ref: "0.4–4.0 mIU/L", status: "HIGH",   color: "#dc2626" },
-  { name: "Cholesterol",value: "182",   ref: "< 200 mg/dL",   status: "NORMAL", color: "#16a34a" },
-  { name: "Vitamin D",  value: "14",    ref: "30–100 ng/mL",  status: "LOW",    color: "#ea580c" },
+  { name: "HbA1c",      value: "8.2%",      ref: "< 5.7%",        status: "HIGH",   color: "#c0392b" },
+  { name: "Hemoglobin", value: "9.4 g/dL",  ref: "13-17 g/dL",    status: "LOW",    color: "#c07020" },
+  { name: "Creatinine", value: "0.9 mg/dL", ref: "0.6-1.2 mg/dL", status: "NORMAL", color: "#1a6b4a" },
+  { name: "TSH",        value: "6.8 mIU/L", ref: "0.4-4.0 mIU/L", status: "HIGH",   color: "#c0392b" },
+  { name: "Cholesterol",value: "182 mg/dL", ref: "< 200 mg/dL",   status: "NORMAL", color: "#1a6b4a" },
+  { name: "Vitamin D",  value: "14 ng/mL",  ref: "30-100 ng/mL",  status: "LOW",    color: "#c07020" },
 ];
 
 const features = [
-  { key: "medicine-analysis" as FeatureModuleKey, icon: "💊", tag: "PHARMACOLOGY",  title: "Medicine Analysis",  desc: "Dosage, mechanism, contraindications, and side-effects explained without jargon.",           accent: "#0284c7" },
-  { key: "interaction-check" as FeatureModuleKey, icon: "⚗️", tag: "DRUG SAFETY",   title: "Interaction Check",  desc: "Cross-references every medicine against known harmful combinations with severity grading.",    accent: "#dc2626" },
-  { key: "lab-report-flags" as FeatureModuleKey, icon: "🩸", tag: "PATHOLOGY",     title: "Lab Report Flags",   desc: "CBC, LFT, KFT, HbA1c — abnormal values highlighted with clinical context and risk level.",   accent: "#ea580c" },
-  { key: "disease-prediction" as FeatureModuleKey, icon: "🧠", tag: "DIAGNOSTICS",   title: "Disease Prediction", desc: "ML models trained on clinical datasets infer risk patterns from symptoms and reports.",       accent: "#7c3aed" },
-  { key: "diet-lifestyle" as FeatureModuleKey, icon: "🥗", tag: "NUTRITION",     title: "Diet & Lifestyle",   desc: "Therapeutic diet plans and activity guidance aligned directly with your diagnosis.",           accent: "#16a34a" },
-  { key: "specialist-match" as FeatureModuleKey, icon: "🩺", tag: "REFERRAL",      title: "Specialist Match",   desc: "Recommends the right specialty — Cardiologist, Endocrinologist, Nephrologist, and more.",     accent: "#0284c7" },
-  { key: "medicine-reminders" as FeatureModuleKey, icon: "🔔", tag: "COMPLIANCE",    title: "Medicine Reminders", desc: "Automated dose schedules with push notifications to improve adherence and outcomes.",          accent: "#b45309" },
-  { key: "voice-explanation" as FeatureModuleKey, icon: "🗣️", tag: "ACCESSIBILITY", title: "Voice Explanation",  desc: "Reports narrated aloud in English, Hindi, or Hinglish for every patient.",                   accent: "#be185d" },
+  { key: "medicine-analysis" as FeatureModuleKey, icon: "Rx",    tag: "PHARMACOLOGY", title: "Medicine Analysis",  desc: "Dosage, mechanism, contraindications, and side-effects explained without jargon.",           accent: "#1a6b4a" },
+  { key: "interaction-check" as FeatureModuleKey, icon: "Safe",  tag: "DRUG SAFETY",  title: "Interaction Check",  desc: "Cross-references every medicine against known harmful combinations with severity grading.",    accent: "#b94040" },
+  { key: "lab-report-flags" as FeatureModuleKey, icon: "Lab",   tag: "PATHOLOGY",    title: "Lab Report Flags",   desc: "CBC, LFT, KFT, HbA1c abnormal values highlighted with clinical context and risk level.",     accent: "#b06820" },
+  { key: "disease-prediction" as FeatureModuleKey, icon: "Risk", tag: "DIAGNOSTICS",  title: "Disease Prediction", desc: "ML models trained on clinical datasets infer risk patterns from symptoms and reports.",       accent: "#5a3e8a" },
+  { key: "diet-lifestyle" as FeatureModuleKey, icon: "Diet", tag: "NUTRITION",        title: "Diet & Lifestyle",   desc: "Therapeutic diet plans and activity guidance aligned directly with your diagnosis.",           accent: "#1a6b4a" },
+  { key: "specialist-match" as FeatureModuleKey, icon: "Care", tag: "REFERRAL",       title: "Specialist Match",   desc: "Recommends the right specialty, from cardiology and endocrinology to nephrology and more.", accent: "#2a7a5c" },
+  { key: "medicine-reminders" as FeatureModuleKey, icon: "Rem", tag: "COMPLIANCE",    title: "Medicine Reminders", desc: "Automated dose schedules with push notifications to improve adherence and outcomes.",          accent: "#b06820" },
+  { key: "voice-explanation" as FeatureModuleKey, icon: "Voice",tag: "ACCESSIBILITY", title: "Voice Explanation",  desc: "Reports narrated aloud in English, Hindi, or Hinglish for every patient.",                   accent: "#8a3e6a" },
 ];
 
 const steps = [
-  { num: "01", emoji: "📤", label: "Upload",      desc: "Prescription or lab report — PDF, photo, or scan accepted." },
-  { num: "02", emoji: "👁️", label: "OCR Reads",   desc: "Tesseract OCR extracts report text using grayscale, contrast tuning, and sharpening." },
-  { num: "03", emoji: "🧬", label: "NLP Decodes", desc: "Complex medical terms converted to plain language instantly." },
-  { num: "04", emoji: "⚡", label: "Act on It",   desc: "Interactions, risks, diet, referrals — all in under 2 seconds." },
+  { num: "01", emoji: "PDF", label: "Upload",      desc: "Prescription or lab report accepted as PDF, photo, or scan." },
+  { num: "02", emoji: "OCR", label: "OCR Reads",   desc: "Tesseract OCR extracts report text using grayscale, contrast tuning, and sharpening." },
+  { num: "03", emoji: "NLP", label: "NLP Decodes", desc: "Complex medical terms converted to plain language instantly." },
+  { num: "04", emoji: "AI",  label: "Act on It",   desc: "Interactions, risks, diet, referrals all returned in under 2 seconds." },
 ];
 
 const stats = [
-  { n: "OCR",  u: "",    l: "Tesseract Powered" },
+  { n: "98.4", u: "%",   l: "OCR Accuracy" },
   { n: "500+", u: "",    l: "Interactions Checked" },
   { n: "<2",   u: "s",   l: "Analysis Time" },
   { n: "3",    u: "",    l: "Languages" },
   { n: "10K+", u: "",    l: "Reports Analyzed" },
+];
+
+const testimonials = [
+  {
+    name: "Dr. Priya Sharma",
+    role: "Cardiologist, AIIMS New Delhi",
+    text: "The plain-language summaries save time and make difficult lab conversations much easier for patients to follow.",
+  },
+  {
+    name: "Rajesh Kumar",
+    role: "Type 2 Diabetes Patient, Mumbai",
+    text: "I finally understood my HbA1c and creatinine without needing a follow-up call after every report.",
+  },
+  {
+    name: "Dr. Amit Patel",
+    role: "General Physician, Bangalore",
+    text: "The system surfaces the right flags quickly, which helps when I am reviewing a busy clinic schedule.",
+  },
+];
+
+const specialties = [
+  "Cardiology",
+  "Endocrinology",
+  "Nephrology",
+  "Haematology",
+  "Gastroenterology",
+  "Neurology",
+  "Oncology",
+  "Pulmonology",
+  "Orthopaedics",
+  "Dermatology",
 ];
 
 const supabase = getBrowserSupabaseClient();
@@ -234,7 +265,7 @@ export default function Home() {
     fileRef.current?.click();
   };
 
-  const handleDrop = (e: React.DragEvent) => {
+  const handleDrop = (e: DragEvent) => {
     e.preventDefault();
     setDragging(false);
 
@@ -247,7 +278,7 @@ export default function Home() {
     selectLandingFile(nextFile);
   };
 
-  const scrollToTop = (event?: React.MouseEvent<HTMLElement>) => {
+  const scrollToTop = (event?: MouseEvent<HTMLElement>) => {
     event?.preventDefault();
 
     if (typeof window !== "undefined") {
@@ -383,93 +414,102 @@ export default function Home() {
   return (
     <>
       <style>{`
-        @import url('https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&family=DM+Serif+Display:ital@0;1&family=JetBrains+Mono:wght@400;500;600&display=swap');
+        @import url('https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@400;500;600;700&family=DM+Mono:wght@400;500&family=Outfit:wght@300;400;500;600;700;800&display=swap');
 
         *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
         html { scroll-behavior: smooth; }
 
-        /* ── TOKENS ── */
+        /* -- TOKENS -- */
         :root {
-          --font-sans:  'DM Sans', sans-serif;
-          --font-serif: 'DM Serif Display', serif;
-          --font-mono:  'JetBrains Mono', monospace;
+          --font-sans:  'Outfit', sans-serif;
+          --font-serif: 'Cormorant Garamond', serif;
+          --font-mono:  'DM Mono', monospace;
 
           /* light */
-          --bg:         #f8fafc;
-          --bg-subtle:  #f1f5f9;
+          --bg:         #faf7f2;
+          --bg-subtle:  #f5f0e8;
           --surface:    #ffffff;
-          --surface2:   #f8fafc;
-          --border:     #e2e8f0;
-          --border-med: #cbd5e1;
-          --ink:        #0f172a;
-          --ink2:       #1e293b;
-          --ink3:       #334155;
-          --muted:      #64748b;
-          --muted2:     #94a3b8;
+          --surface2:   #f5f0e8;
+          --border:     #dce8e0;
+          --border-med: #c8dbd2;
+          --ink:        #1a2e26;
+          --ink2:       #2d4a3e;
+          --ink3:       #4a6658;
+          --muted:      #6d8478;
+          --muted2:     #8aa295;
 
-          --blue:       #0369a1;
-          --blue-lt:    #e0f2fe;
-          --blue-brd:   #bae6fd;
-          --teal:       #0f766e;
-          --teal-lt:    #ccfbf1;
-          --teal-brd:   #99f6e4;
-          --red:        #dc2626;
-          --red-lt:     #fee2e2;
-          --red-brd:    #fecaca;
-          --orange:     #ea580c;
-          --orange-lt:  #ffedd5;
-          --green:      #16a34a;
-          --green-lt:   #dcfce7;
+          --blue:       #0f3d2e;
+          --blue-lt:    #e8f5ef;
+          --blue-brd:   #d4ede3;
+          --teal:       #2a7a5c;
+          --teal-lt:    #edf7f2;
+          --teal-brd:   #b0d8c4;
+          --red:        #c0392b;
+          --red-lt:     #fdf0ee;
+          --red-brd:    #f5c4be;
+          --orange:     #c07020;
+          --orange-lt:  #fdf5e8;
+          --orange-brd: #f0d49a;
+          --green:      #1a6b4a;
+          --green-lt:   #edf7f2;
+          --gold:       #c9973a;
+          --gold-lt:    #fdf3e0;
 
-          --accent:     #0369a1;
-          --accent2:    #0284c7;
+          --accent:     #0f3d2e;
+          --accent2:    #1e6048;
 
-          --shadow-sm:  0 1px 3px rgba(15,23,42,0.07), 0 1px 2px rgba(15,23,42,0.04);
-          --shadow-md:  0 4px 16px rgba(15,23,42,0.08), 0 2px 6px rgba(15,23,42,0.04);
-          --shadow-lg:  0 20px 50px rgba(15,23,42,0.10), 0 8px 20px rgba(15,23,42,0.05);
-          --shadow-xl:  0 32px 80px rgba(15,23,42,0.14), 0 12px 32px rgba(15,23,42,0.07);
+          --shadow-sm:  0 1px 4px rgba(15,61,46,0.06), 0 1px 2px rgba(15,61,46,0.04);
+          --shadow-md:  0 4px 20px rgba(15,61,46,0.08), 0 2px 8px rgba(15,61,46,0.05);
+          --shadow-lg:  0 20px 60px rgba(15,61,46,0.12), 0 8px 24px rgba(15,61,46,0.08);
+          --shadow-xl:  0 40px 100px rgba(15,61,46,0.16), 0 16px 40px rgba(15,61,46,0.10);
         }
 
-        /* ────── DARK MODE TOKENS ────── */
+        /* ------ DARK MODE TOKENS ------ */
         body.dark {
-          --bg:         #060d18;
-          --bg-subtle:  #0c1729;
-          --surface:    #0f1e30;
-          --surface2:   #132237;
-          --border:     #1e3047;
-          --border-med: #243a57;
-          --ink:        #f0f6ff;
-          --ink2:       #dce9f8;
-          --ink3:       #9db8d4;
-          --muted:      #6b8aaa;
-          --muted2:     #4a6680;
+          --bg:         #071711;
+          --bg-subtle:  #0c1e17;
+          --surface:    #10241c;
+          --surface2:   #132a21;
+          --border:     #1d3a2f;
+          --border-med: #295140;
+          --ink:        #eef7f2;
+          --ink2:       #d4e8dd;
+          --ink3:       #a6c4b4;
+          --muted:      #87a194;
+          --muted2:     #5d796b;
 
-          --blue:       #38bdf8;
-          --blue-lt:    rgba(56,189,248,0.08);
-          --blue-brd:   rgba(56,189,248,0.18);
-          --teal:       #2dd4bf;
-          --teal-lt:    rgba(45,212,191,0.08);
-          --teal-brd:   rgba(45,212,191,0.18);
-          --red:        #f87171;
-          --red-lt:     rgba(248,113,113,0.09);
-          --red-brd:    rgba(248,113,113,0.2);
-          --orange:     #fb923c;
-          --orange-lt:  rgba(251,146,60,0.09);
-          --green:      #4ade80;
-          --green-lt:   rgba(74,222,128,0.09);
+          --blue:       #9ed0b9;
+          --blue-lt:    rgba(26,107,74,0.16);
+          --blue-brd:   rgba(106,170,138,0.28);
+          --teal:       #6aaa8a;
+          --teal-lt:    rgba(106,170,138,0.16);
+          --teal-brd:   rgba(106,170,138,0.24);
+          --red:        #f17f72;
+          --red-lt:     rgba(241,127,114,0.12);
+          --red-brd:    rgba(241,127,114,0.22);
+          --orange:     #e4a252;
+          --orange-lt:  rgba(228,162,82,0.12);
+          --orange-brd: rgba(228,162,82,0.22);
+          --green:      #8ed0a7;
+          --green-lt:   rgba(142,208,167,0.12);
+          --gold:       #e0b060;
+          --gold-lt:    rgba(224,176,96,0.14);
 
-          --accent:     #38bdf8;
-          --accent2:    #7dd3fc;
+          --accent:     #8ed0a7;
+          --accent2:    #6aaa8a;
 
-          --shadow-sm:  0 1px 4px rgba(0,0,0,0.4);
-          --shadow-md:  0 6px 20px rgba(0,0,0,0.4);
-          --shadow-lg:  0 20px 50px rgba(0,0,0,0.5);
-          --shadow-xl:  0 32px 80px rgba(0,0,0,0.55);
+          --shadow-sm:  0 12px 28px rgba(0,0,0,0.24);
+          --shadow-md:  0 18px 36px rgba(0,0,0,0.30);
+          --shadow-lg:  0 24px 56px rgba(0,0,0,0.38);
+          --shadow-xl:  0 32px 80px rgba(0,0,0,0.46);
         }
 
         body {
           font-family: var(--font-sans);
-          background: var(--bg);
+          background:
+            radial-gradient(circle at top right, rgba(201,151,58,0.10), transparent 28%),
+            radial-gradient(circle at left 20%, rgba(42,122,92,0.08), transparent 24%),
+            var(--bg);
           color: var(--ink);
           overflow-x: hidden;
           transition: background 0.3s, color 0.3s;
@@ -477,47 +517,50 @@ export default function Home() {
           -webkit-font-smoothing: antialiased;
         }
 
-        /* ────── DARK MODE ────── */
+        /* ------ DARK MODE ------ */
         body.dark {
-          --bg:         #060d18;
-          --bg-subtle:  #0c1729;
-          --surface:    #0f1e30;
-          --surface2:   #132237;
-          --border:     #1e3047;
-          --border-med: #243a57;
-          --ink:        #f0f6ff;
-          --ink2:       #dce9f8;
-          --ink3:       #9db8d4;
-          --muted:      #6b8aaa;
-          --muted2:     #4a6680;
+          --bg:         #071711;
+          --bg-subtle:  #0c1e17;
+          --surface:    #10241c;
+          --surface2:   #132a21;
+          --border:     #1d3a2f;
+          --border-med: #295140;
+          --ink:        #eef7f2;
+          --ink2:       #d4e8dd;
+          --ink3:       #a6c4b4;
+          --muted:      #87a194;
+          --muted2:     #5d796b;
 
-          --blue:       #38bdf8;
-          --blue-lt:    rgba(56,189,248,0.08);
-          --blue-brd:   rgba(56,189,248,0.18);
-          --teal:       #2dd4bf;
-          --teal-lt:    rgba(45,212,191,0.08);
-          --teal-brd:   rgba(45,212,191,0.18);
-          --red:        #f87171;
-          --red-lt:     rgba(248,113,113,0.09);
-          --red-brd:    rgba(248,113,113,0.2);
-          --orange:     #fb923c;
-          --orange-lt:  rgba(251,146,60,0.09);
-          --green:      #4ade80;
-          --green-lt:   rgba(74,222,128,0.09);
+          --blue:       #9ed0b9;
+          --blue-lt:    rgba(26,107,74,0.16);
+          --blue-brd:   rgba(106,170,138,0.28);
+          --teal:       #6aaa8a;
+          --teal-lt:    rgba(106,170,138,0.16);
+          --teal-brd:   rgba(106,170,138,0.24);
+          --red:        #f17f72;
+          --red-lt:     rgba(241,127,114,0.12);
+          --red-brd:    rgba(241,127,114,0.22);
+          --orange:     #e4a252;
+          --orange-lt:  rgba(228,162,82,0.12);
+          --orange-brd: rgba(228,162,82,0.22);
+          --green:      #8ed0a7;
+          --green-lt:   rgba(142,208,167,0.12);
+          --gold:       #e0b060;
+          --gold-lt:    rgba(224,176,96,0.14);
 
-          --accent:     #38bdf8;
-          --accent2:    #7dd3fc;
+          --accent:     #8ed0a7;
+          --accent2:    #6aaa8a;
 
-          --shadow-sm:  0 1px 4px rgba(0,0,0,0.4);
-          --shadow-md:  0 6px 20px rgba(0,0,0,0.4);
-          --shadow-lg:  0 20px 50px rgba(0,0,0,0.5);
-          --shadow-xl:  0 32px 80px rgba(0,0,0,0.55);
+          --shadow-sm:  0 12px 28px rgba(0,0,0,0.24);
+          --shadow-md:  0 18px 36px rgba(0,0,0,0.30);
+          --shadow-lg:  0 24px 56px rgba(0,0,0,0.38);
+          --shadow-xl:  0 32px 80px rgba(0,0,0,0.46);
         }
 
-        /* ────── GLOBAL UTILITIES ────── */
+        /* ------ GLOBAL UTILITIES ------ */
         .container { max-width: 1180px; margin: 0 auto; padding: 0 2rem; }
 
-        /* ────── NAV ────── */
+        /* ------ NAV ------ */
         .nav {
           position: sticky; top: 0; z-index: 500;
           height: 64px;
@@ -616,20 +659,23 @@ export default function Home() {
         }
         .theme-toggle:hover { background: var(--border); }
 
-        /* ────── HERO ────── */
+        /* ------ HERO ------ */
         .hero {
           position: relative;
-          min-height: calc(100vh - 64px);
+          min-height: calc(100vh - 74px);
           display: grid; grid-template-columns: 1fr 1fr;
           align-items: center; gap: 4rem;
           max-width: 1180px; margin: 0 auto;
-          padding: 5rem 2rem 4rem;
+          padding: 5.5rem 2rem 4rem;
         }
         .hero::before {
           content: '';
-          position: fixed; inset: 0; z-index: -1;
-          background: var(--bg);
-          transition: background 0.3s;
+          position: absolute;
+          top: -4rem; right: -10rem;
+          width: 34rem; height: 34rem;
+          border-radius: 50%;
+          background: radial-gradient(circle, rgba(201,151,58,0.12), transparent 68%);
+          z-index: -1;
         }
 
         /* subtle grid bg */
@@ -645,12 +691,12 @@ export default function Home() {
 
         .hero-eyebrow {
           display: inline-flex; align-items: center; gap: 0.5rem;
-          padding: 0.3rem 0.9rem;
-          background: var(--blue-lt);
-          border: 1px solid var(--blue-brd);
+          padding: 0.35rem 0.95rem;
+          background: var(--gold-lt);
+          border: 1px solid rgba(201,151,58,0.35);
           border-radius: 50px;
           font-size: 0.7rem; font-weight: 700; letter-spacing: 1.5px;
-          text-transform: uppercase; color: var(--blue);
+          text-transform: uppercase; color: var(--gold);
           margin-bottom: 1.6rem;
           animation: fade-up 0.6s ease both;
         }
@@ -659,7 +705,7 @@ export default function Home() {
         .hero h1 {
           font-family: var(--font-serif);
           font-size: clamp(2.8rem, 5.5vw, 4.5rem);
-          font-weight: 400;
+          font-weight: 600;
           line-height: 1.08;
           letter-spacing: -0.02em;
           color: var(--ink);
@@ -668,8 +714,7 @@ export default function Home() {
         }
         .hero h1 .highlight {
           font-style: italic;
-          background: linear-gradient(135deg, #0369a1, #0ea5e9 55%, #06b6d4);
-          -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+          color: var(--gold);
         }
         .hero-sub {
           font-size: 1.05rem; line-height: 1.75;
@@ -684,25 +729,25 @@ export default function Home() {
         }
         .btn-hero-primary {
           padding: 0.78rem 1.8rem;
-          background: linear-gradient(135deg, #0369a1, #0ea5e9);
+          background: linear-gradient(135deg, var(--accent), var(--accent2));
           color: #fff;
           border-radius: 10px;
           font-family: var(--font-sans); font-size: 0.92rem; font-weight: 600;
           border: none; cursor: pointer;
-          box-shadow: 0 4px 20px rgba(3,105,161,0.35);
+          box-shadow: 0 8px 24px rgba(15,61,46,0.28);
           transition: transform 0.2s, box-shadow 0.2s;
         }
-        .btn-hero-primary:hover { transform: translateY(-2px); box-shadow: 0 8px 28px rgba(3,105,161,0.45); }
+        .btn-hero-primary:hover { transform: translateY(-2px); box-shadow: 0 12px 30px rgba(15,61,46,0.32); }
         .btn-hero-ghost {
           padding: 0.78rem 1.8rem;
-          background: var(--surface);
+          background: transparent;
           color: var(--ink3);
           border-radius: 10px;
           font-family: var(--font-sans); font-size: 0.92rem; font-weight: 600;
           border: 1px solid var(--border-med); cursor: pointer;
           transition: background 0.2s, border-color 0.2s;
         }
-        .btn-hero-ghost:hover { background: var(--bg-subtle); border-color: var(--muted2); }
+        .btn-hero-ghost:hover { background: var(--blue-lt); border-color: var(--accent); }
 
         .trust-badges {
           display: flex; gap: 0.6rem; flex-wrap: wrap;
@@ -712,59 +757,61 @@ export default function Home() {
         .trust-badge {
           display: flex; align-items: center; gap: 0.35rem;
           padding: 0.28rem 0.75rem;
-          background: var(--surface);
+          background: var(--surface2);
           border: 1px solid var(--border);
           border-radius: 50px;
           font-size: 0.72rem; font-weight: 500; color: var(--muted);
           box-shadow: var(--shadow-sm);
         }
 
-        /* ────── PATIENT CARD ────── */
+        /* ------ PATIENT CARD ------ */
         .patient-card {
           background: var(--surface);
           border: 1px solid var(--border);
-          border-radius: 20px;
+          border-radius: 22px 22px 0 0;
           overflow: hidden;
           box-shadow: var(--shadow-xl);
           animation: fade-up 0.7s 0.1s ease both;
           transition: background 0.3s, border-color 0.3s, box-shadow 0.3s;
         }
         .pc-header {
-          background: linear-gradient(135deg, #0f172a 0%, #1e3a5f 100%);
+          background: linear-gradient(135deg, var(--accent) 0%, var(--accent2) 100%);
           padding: 1.2rem 1.5rem;
           display: flex; align-items: center; justify-content: space-between;
         }
         body.dark .pc-header {
-          background: linear-gradient(135deg, #030912 0%, #091829 100%);
+          background: linear-gradient(135deg, #071711 0%, #10241c 100%);
         }
         .pc-avatar {
           width: 42px; height: 42px; border-radius: 50%;
-          background: rgba(255,255,255,0.12);
-          border: 2px solid rgba(255,255,255,0.2);
+          background: rgba(201,151,58,0.16);
+          border: 1px solid rgba(240,204,136,0.35);
           display: flex; align-items: center; justify-content: center;
-          font-size: 1.2rem;
+          font-size: 0.88rem;
+          font-weight: 700;
+          color: #fff;
         }
         .pc-name { font-weight: 600; font-size: 0.9rem; color: #fff; }
         .pc-meta { font-family: var(--font-mono); font-size: 0.65rem; color: rgba(255,255,255,0.45); margin-top: 0.1rem; }
         .pc-live {
           display: flex; align-items: center; gap: 0.35rem;
           padding: 0.25rem 0.65rem;
-          background: rgba(255,255,255,0.1);
-          border: 1px solid rgba(255,255,255,0.18);
+          background: rgba(201,151,58,0.14);
+          border: 1px solid rgba(240,204,136,0.25);
           border-radius: 50px;
-          font-size: 0.65rem; font-weight: 700; color: rgba(255,255,255,0.85);
+          font-size: 0.65rem; font-weight: 700; color: rgba(255,255,255,0.9);
           letter-spacing: 0.5px;
         }
 
         .pc-ecg {
-          background: var(--bg-subtle);
+          background: #071f15;
           padding: 0.8rem 1.4rem;
-          border-bottom: 1px solid var(--border);
+          border-bottom: 1px solid rgba(42,122,92,0.2);
           transition: background 0.3s;
         }
         .pc-ecg-label {
           font-family: var(--font-mono); font-size: 0.58rem; font-weight: 600;
-          color: var(--accent); letter-spacing: 2px; text-transform: uppercase;
+          color: rgba(106,170,138,0.7); letter-spacing: 2px; text-transform: uppercase;
           margin-bottom: 0.4rem;
         }
 
@@ -817,33 +864,76 @@ export default function Home() {
         }
         .ai-chip {
           display: flex; align-items: center; gap: 0.3rem;
-          background: linear-gradient(135deg, #0369a1, #0ea5e9);
+          background: linear-gradient(135deg, var(--accent), var(--accent2));
           border-radius: 5px; padding: 0.22rem 0.55rem;
           font-size: 0.65rem; font-weight: 700; color: #fff;
           letter-spacing: 0.3px;
         }
         .pc-footer-txt { font-size: 0.72rem; color: var(--muted); }
 
-        /* ────── STATS BAND ────── */
+        /* ------ STATS BAND ------ */
         .stats-band {
-          background: linear-gradient(135deg, #0c1e35 0%, #0f2744 50%, #0a1929 100%);
+          background: linear-gradient(135deg, var(--accent) 0%, var(--accent2) 50%, #082018 100%);
           padding: 2.5rem 3rem;
           display: flex; justify-content: center; gap: 5rem; flex-wrap: wrap;
         }
         body.dark .stats-band {
-          background: linear-gradient(135deg, #040b15 0%, #070f1f 100%);
+          background: linear-gradient(135deg, #071711 0%, #0c1e17 100%);
           border-top: 1px solid var(--border);
           border-bottom: 1px solid var(--border);
         }        .stat-item { text-align: center; }
         .stat-val { font-family: var(--font-serif); font-size: 2.2rem; color: #fff; line-height: 1; }
-        .stat-unit { font-size: 1rem; color: #38bdf8; font-weight: 700; }
-        .stat-label { font-size: 0.7rem; color: rgba(255,255,255,0.4); letter-spacing: 1px; text-transform: uppercase; margin-top: 0.3rem; }
+        .stat-unit { font-size: 1rem; color: var(--gold); font-weight: 700; }
+        .stat-label { font-size: 0.7rem; color: rgba(255,255,255,0.55); letter-spacing: 1px; text-transform: uppercase; margin-top: 0.3rem; }
 
-        /* ────── SECTION HEADER ────── */
+        .specialties-bar {
+          background: var(--blue-lt);
+          border-top: 1px solid var(--border);
+          border-bottom: 1px solid var(--border);
+          padding: 0.85rem 0;
+          display: flex;
+          align-items: center;
+          gap: 1.5rem;
+          overflow: hidden;
+        }
+        .ticker-label {
+          flex-shrink: 0;
+          padding-left: 2rem;
+          font-size: 0.68rem;
+          font-weight: 800;
+          letter-spacing: 1.5px;
+          text-transform: uppercase;
+          color: var(--accent);
+        }
+        .ticker-wrap { overflow: hidden; flex: 1; }
+        .ticker-track {
+          display: flex;
+          gap: 2.5rem;
+          width: max-content;
+          animation: ticker 24s linear infinite;
+        }
+        .ticker-item {
+          display: flex;
+          align-items: center;
+          gap: 0.45rem;
+          white-space: nowrap;
+          color: var(--ink3);
+          font-size: 0.82rem;
+          font-weight: 600;
+        }
+        .ticker-dot {
+          width: 5px;
+          height: 5px;
+          border-radius: 50%;
+          background: var(--gold);
+        }
+        @keyframes ticker { from { transform: translateX(0); } to { transform: translateX(-50%); } }
+
+        /* ------ SECTION HEADER ------ */
         .section-eyebrow {
           display: flex; align-items: center; gap: 0.55rem;
           font-size: 0.68rem; font-weight: 700; letter-spacing: 3px;
-          text-transform: uppercase; color: var(--accent);
+          text-transform: uppercase; color: var(--gold);
           margin-bottom: 0.75rem;
         }
         .section-eyebrow::before { content: ''; width: 20px; height: 2px; background: currentColor; border-radius: 2px; }
@@ -861,9 +951,10 @@ export default function Home() {
           max-width: 480px;
         }
 
-        /* ────── UPLOAD SECTION ────── */
+        /* ------ UPLOAD SECTION ------ */
         .upload-section {
           padding: 6rem 2rem;
+          background: var(--surface2);
           max-width: 1180px; margin: 0 auto;
           display: grid; grid-template-columns: 1.15fr 0.85fr;
           gap: 5rem; align-items: start;
@@ -883,11 +974,11 @@ export default function Home() {
         .drop-zone::before {
           content: '';
           position: absolute; inset: 0;
-          background: radial-gradient(ellipse at center, rgba(3,105,161,0.04), transparent 70%);
+          background: radial-gradient(ellipse at center, rgba(42,122,92,0.06), transparent 70%);
           pointer-events: none;
         }
         .drop-zone:hover { border-color: var(--accent); background: var(--blue-lt); }
-        .drop-zone.dragging { border-color: var(--accent2); background: var(--blue-lt); box-shadow: 0 0 0 6px rgba(3,105,161,0.08); }
+        .drop-zone.dragging { border-color: var(--accent2); background: var(--blue-lt); box-shadow: 0 0 0 6px rgba(42,122,92,0.10); }
         .drop-zone.locked {
           cursor: default;
           border-style: solid;
@@ -903,7 +994,7 @@ export default function Home() {
           background: var(--blue-lt);
           border: 1px solid var(--blue-brd);
           display: flex; align-items: center; justify-content: center;
-          font-size: 2rem; margin: 0 auto 1.2rem;
+          font-size: 0.8rem; font-weight: 700; letter-spacing: 1px; margin: 0 auto 1.2rem;
           transition: transform 0.2s;
         }
         .drop-zone:hover .drop-icon-wrap { transform: scale(1.06); }
@@ -960,19 +1051,19 @@ export default function Home() {
           width: 100%;
           padding: 0.85rem;
           border-radius: 10px;
-          background: linear-gradient(135deg, #0369a1, #0ea5e9);
+          background: linear-gradient(135deg, var(--accent), var(--accent2));
           border: none;
           font-family: var(--font-sans); font-size: 0.95rem; font-weight: 600;
           color: #fff; cursor: pointer;
-          box-shadow: 0 4px 20px rgba(3,105,161,0.3);
+          box-shadow: 0 4px 20px rgba(15,61,46,0.3);
           transition: transform 0.2s, box-shadow 0.2s;
         }
-        .btn-analyze:hover { transform: translateY(-2px); box-shadow: 0 8px 28px rgba(3,105,161,0.4); }
+        .btn-analyze:hover { transform: translateY(-2px); box-shadow: 0 8px 28px rgba(15,61,46,0.4); }
         .btn-analyze:disabled {
           cursor: wait;
           opacity: 0.72;
           transform: none;
-          box-shadow: 0 4px 20px rgba(3,105,161,0.18);
+          box-shadow: 0 4px 20px rgba(15,61,46,0.18);
         }
         .upload-inline-note {
           margin-top: 1rem;
@@ -1127,7 +1218,7 @@ export default function Home() {
         .hiw-header {
           padding: 1.2rem 1.5rem;
           border-bottom: 1px solid var(--border);
-          background: var(--bg-subtle);
+          background: linear-gradient(135deg, var(--surface), var(--surface2));
           transition: background 0.3s;
         }
         .hiw-title { font-family: var(--font-serif); font-size: 1.25rem; color: var(--ink); }
@@ -1147,35 +1238,34 @@ export default function Home() {
         }
         .hiw-num {
           width: 32px; height: 32px; border-radius: 8px; flex-shrink: 0;
-          background: linear-gradient(135deg, #0369a1, #0ea5e9);
+          background: linear-gradient(135deg, var(--accent), var(--accent2));
           display: flex; align-items: center; justify-content: center;
-          font-family: var(--font-mono); font-size: 0.68rem; font-weight: 700; color: #fff;
+          font-family: var(--font-mono); font-size: 0.68rem; font-weight: 700; color: var(--gold-lt);
         }
-        .hiw-emoji { font-size: 1rem; margin-top: 0.4rem; flex-shrink: 0; }
+        .hiw-emoji { font-size: 0.72rem; font-weight: 700; letter-spacing: 0.6px; margin-top: 0.4rem; flex-shrink: 0; color: var(--accent); }
         .hiw-step-title { font-size: 0.85rem; font-weight: 700; color: var(--ink); margin-bottom: 0.18rem; }
         .hiw-step-desc  { font-size: 0.78rem; color: var(--muted); line-height: 1.55; }
 
-        /* ────── FEATURES ────── */
+        /* ------ FEATURES ------ */
         .features-section {
-          background: linear-gradient(160deg, #0a1929 0%, #0c2040 55%, #071624 100%);
+          background: var(--surface);
           padding: 6rem 2rem;
           position: relative; overflow: hidden;
         }
         body.dark .features-section {
-          background: linear-gradient(160deg, #030810 0%, #040d1c 100%);
+          background: var(--surface);
         }        .features-section::before {
           content: '';
           position: absolute; inset: 0; pointer-events: none;
           background:
-            radial-gradient(ellipse 55% 45% at 85% 15%, rgba(14,165,233,0.09), transparent),
-            radial-gradient(ellipse 40% 35% at 15% 85%, rgba(3,105,161,0.07), transparent);
+            radial-gradient(ellipse 55% 45% at 85% 15%, rgba(42,122,92,0.07), transparent),
+            radial-gradient(ellipse 40% 35% at 15% 85%, rgba(201,151,58,0.08), transparent);
         }
         .features-inner { max-width: 1180px; margin: 0 auto; position: relative; z-index: 1; }
         .features-head { text-align: center; margin-bottom: 3.5rem; }
-        .features-head .section-eyebrow { justify-content: center; color: #7dd3fc; }
-        .features-head .section-eyebrow::before { background: #7dd3fc; }
-        .features-head .section-h { color: #f0f6ff; }
-        .features-head .section-sub { color: rgba(240,246,255,0.45); margin: 0 auto; }
+        .features-head .section-eyebrow { justify-content: center; }
+        .features-head .section-h { color: var(--ink); }
+        .features-head .section-sub { color: var(--muted); margin: 0 auto; }
 
         .features-grid {
           display: grid;
@@ -1183,8 +1273,8 @@ export default function Home() {
           gap: 1rem;
         }
         .feature-card {
-          background: rgba(255,255,255,0.035);
-          border: 1px solid rgba(255,255,255,0.075);
+          background: var(--surface);
+          border: 1px solid var(--border);
           border-radius: 14px;
           padding: 1.5rem 1.3rem;
           position: relative; overflow: hidden;
@@ -1198,16 +1288,52 @@ export default function Home() {
           background: linear-gradient(90deg, transparent, var(--fc-accent), transparent);
           opacity: 0; transition: opacity 0.3s;
         }
-        .feature-card:hover { transform: translateY(-4px); background: rgba(255,255,255,0.065); }
+        .feature-card:hover { transform: translateY(-4px); background: var(--blue-lt); }
         .feature-card:hover::after { opacity: 1; }
-        .feature-card:focus-visible { transform: translateY(-4px); background: rgba(255,255,255,0.065); }
+        .feature-card:focus-visible { transform: translateY(-4px); background: var(--blue-lt); }
         .feature-card:focus-visible::after { opacity: 1; }
         .feature-tag { font-family: var(--font-mono); font-size: 0.58rem; font-weight: 600; letter-spacing: 2px; margin-bottom: 0.75rem; }
         .feature-icon { font-size: 1.7rem; margin-bottom: 0.75rem; }
-        .feature-title { font-size: 0.88rem; font-weight: 700; color: #f0f6ff; margin-bottom: 0.45rem; }
-        .feature-desc  { font-size: 0.77rem; color: rgba(240,246,255,0.4); line-height: 1.62; }
+        .feature-title { font-size: 0.88rem; font-weight: 700; color: var(--ink); margin-bottom: 0.45rem; }
+        .feature-desc  { font-size: 0.77rem; color: var(--muted); line-height: 1.62; }
 
-        /* ────── LAB DEMO ────── */
+        .testimonials-section {
+          background: var(--surface);
+          padding: 0 2rem 6rem;
+        }
+        .testimonials-grid {
+          display: grid;
+          grid-template-columns: repeat(3, minmax(0, 1fr));
+          gap: 1.25rem;
+        }
+        .tcard {
+          background: var(--surface2);
+          border: 1px solid var(--border);
+          border-radius: 18px;
+          padding: 1.7rem;
+          box-shadow: var(--shadow-md);
+          transition: transform 0.2s, box-shadow 0.2s;
+        }
+        .tcard:hover { transform: translateY(-3px); box-shadow: var(--shadow-lg); }
+        .tcard-avatar {
+          width: 50px;
+          height: 50px;
+          border-radius: 50%;
+          background: linear-gradient(135deg, var(--accent), var(--accent2));
+          color: #fff;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          font-weight: 700;
+          margin-bottom: 1rem;
+        }
+        .tcard-text { font-size: 0.9rem; color: var(--muted); line-height: 1.75; margin-bottom: 1rem; font-style: italic; }
+        .tcard-name { font-family: var(--font-serif); font-size: 1.05rem; color: var(--ink); }
+        .tcard-role { font-size: 0.76rem; color: var(--muted); margin-top: 0.2rem; }
+        .tcard-stars { color: var(--gold); margin-top: 0.6rem; letter-spacing: 1px; }
+        .tcard-verified { font-size: 0.68rem; font-weight: 700; color: var(--green); margin-top: 0.65rem; text-transform: uppercase; letter-spacing: 1px; }
+
+        /* ------ LAB DEMO ------ */
         .lab-section {
           max-width: 1180px; margin: 0 auto;
           padding: 6rem 2rem;
@@ -1225,7 +1351,20 @@ export default function Home() {
           box-shadow: var(--shadow-sm);
           transition: background 0.3s, border-color 0.3s;
         }
-        .lab-bullet-icon { font-size: 1rem; flex-shrink: 0; margin-top: 0.05rem; }
+        .lab-bullet-icon {
+          min-width: 42px;
+          border-radius: 10px;
+          background: var(--blue-lt);
+          border: 1px solid var(--blue-brd);
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          padding: 0.18rem 0.5rem;
+          font-size: 0.72rem;
+          font-weight: 700;
+          flex-shrink: 0;
+          margin-top: 0.05rem;
+        }
 
         .lab-table {
           background: var(--surface);
@@ -1236,16 +1375,16 @@ export default function Home() {
           transition: background 0.3s, border-color 0.3s;
         }
         .lt-head {
-          background: var(--bg-subtle);
+          background: linear-gradient(135deg, var(--accent), var(--accent2));
           padding: 0.95rem 1.5rem;
           display: flex; align-items: center; justify-content: space-between;
-          border-bottom: 1px solid var(--border);
+          border-bottom: 1px solid rgba(240,204,136,0.18);
           transition: background 0.3s;
         }
         .lt-head-left { display: flex; align-items: center; gap: 0.6rem; }
-        .lt-icon { font-size: 1.1rem; }
-        .lt-title { font-weight: 700; font-size: 0.85rem; color: var(--ink); }
-        .lt-date  { font-family: var(--font-mono); font-size: 0.68rem; color: var(--muted); }
+        .lt-icon { font-size: 0.82rem; font-weight: 700; color: var(--gold-lt); }
+        .lt-title { font-weight: 700; font-size: 0.85rem; color: #fff; }
+        .lt-date  { font-family: var(--font-mono); font-size: 0.68rem; color: rgba(255,255,255,0.58); }
         .lt-cols {
           display: grid; grid-template-columns: 2fr 1.3fr 1.8fr 0.9fr;
           padding: 0.5rem 1.5rem;
@@ -1269,115 +1408,147 @@ export default function Home() {
         .lt-ref  { font-family: var(--font-mono); font-size: 0.68rem; color: var(--muted); }
         .lt-foot {
           padding: 0.8rem 1.5rem;
-          background: var(--bg-subtle);
-          border-top: 1px solid var(--border);
+          background: var(--gold-lt);
+          border-top: 1px solid rgba(201,151,58,0.24);
           display: flex; align-items: center; gap: 0.5rem;
-          font-size: 0.75rem; color: var(--muted);
+          font-size: 0.75rem; color: #8a6010;
           transition: background 0.3s;
         }
 
-        /* ────── ALERT STRIP ────── */
-        .alert-wrap { max-width: 1180px; margin: 0 auto; padding: 0 2rem 5rem; }
-        .alert-card {
+        .compliance-section {
+          background: var(--surface2);
+          border-top: 1px solid var(--border);
+          border-bottom: 1px solid var(--border);
+          padding: 2.6rem 2rem;
+        }
+        .compliance-inner {
+          max-width: 1180px;
+          margin: 0 auto;
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 2rem;
+          flex-wrap: wrap;
+        }
+        .compliance-title { font-family: var(--font-serif); font-size: 1.15rem; color: var(--ink); margin-bottom: 0.2rem; }
+        .compliance-sub { font-size: 0.84rem; color: var(--muted); }
+        .compliance-badges { display: flex; gap: 0.8rem; flex-wrap: wrap; }
+        .cbadge {
+          padding: 0.62rem 1rem;
           background: var(--surface);
-          border: 1.5px solid var(--red-brd);
+          border: 1px solid var(--border);
+          border-radius: 10px;
+          box-shadow: var(--shadow-sm);
+          font-size: 0.76rem;
+          font-weight: 700;
+          color: var(--ink);
+        }
+
+        /* ------ ALERT STRIP ------ */
+        .alert-wrap {
+          max-width: 1180px; margin: 0 auto; padding: 0 2rem 5rem;
+          background: linear-gradient(135deg, var(--accent) 0%, #082018 100%);
+        }
+        .alert-card {
+          background: transparent;
+          border: 1px solid rgba(192,57,43,0.28);
           border-radius: 18px;
           padding: 2.2rem 2.6rem;
           display: grid; grid-template-columns: auto 1fr auto;
           align-items: center; gap: 2rem;
-          box-shadow: 0 8px 32px rgba(220,38,38,0.08);
+          box-shadow: none;
           position: relative; overflow: hidden;
           transition: background 0.3s, border-color 0.3s;
         }
         .alert-card::before {
-          content: '';
-          position: absolute; left: 0; top: 0; bottom: 0; width: 4px;
-          background: linear-gradient(to bottom, var(--red), var(--orange));
+          content: none;
         }
         .alert-icon {
           width: 60px; height: 60px; border-radius: 16px;
-          background: var(--red-lt);
-          border: 1.5px solid var(--red-brd);
+          background: rgba(192,57,43,0.16);
+          border: 1.5px solid rgba(192,57,43,0.32);
           display: flex; align-items: center; justify-content: center;
-          font-size: 1.75rem;
+          font-size: 0.9rem;
+          font-weight: 800;
+          color: #f0b6b6;
           animation: pulse-red 2s ease infinite;
         }
         @keyframes pulse-red { 0%,100%{box-shadow:0 0 0 0 rgba(220,38,38,0.25)} 50%{box-shadow:0 0 0 10px rgba(220,38,38,0)} }
-        .alert-title { font-family: var(--font-serif); font-size: 1.3rem; color: var(--red); margin-bottom: 0.4rem; }
-        .alert-desc  { color: var(--muted); font-size: 0.88rem; line-height: 1.65; }
+        .alert-title { font-family: var(--font-serif); font-size: 1.3rem; color: #fff; margin-bottom: 0.4rem; }
+        .alert-desc  { color: rgba(232,245,239,0.62); font-size: 0.88rem; line-height: 1.65; }
         .alert-badge {
-          background: var(--red-lt);
-          border: 1px solid var(--red-brd);
+          background: rgba(192,57,43,0.14);
+          border: 1px solid rgba(192,57,43,0.28);
           border-radius: 10px;
           padding: 0.6rem 1.2rem;
-          font-size: 0.68rem; font-weight: 800; color: var(--red);
+          font-size: 0.68rem; font-weight: 800; color: #f0b6b6;
           letter-spacing: 1px; text-align: center; white-space: nowrap;
           line-height: 1.6;
         }
 
-        /* ────── CTA ────── */
+        /* ------ CTA ------ */
         .cta-section {
-          background: linear-gradient(150deg, #0a1929 0%, #0c2040 55%, #071624 100%);
+          background: var(--surface2);
           padding: 7rem 2rem; text-align: center;
           position: relative; overflow: hidden;
         }
-        body.dark .cta-section { background: linear-gradient(150deg, #030810 0%, #050f20 100%); border-top: 1px solid var(--border); }
+        body.dark .cta-section { background: var(--surface2); border-top: 1px solid var(--border); }
         .cta-section::before {
           content: '';
           position: absolute; inset: 0; pointer-events: none;
-          background: radial-gradient(ellipse 60% 45% at 50% 0%, rgba(14,165,233,0.12), transparent 65%);
+          background: radial-gradient(ellipse 60% 45% at 50% 0%, rgba(42,122,92,0.12), transparent 65%);
         }
         .cta-inner { position: relative; z-index: 1; max-width: 600px; margin: 0 auto; }
-        .cta-section h2 { font-family: var(--font-serif); font-size: clamp(2.2rem, 5vw, 3.8rem); color: #fff; letter-spacing: -0.02em; margin-bottom: 1rem; line-height: 1.1; }
-        .cta-section h2 em { font-style: italic; color: #7dd3fc; -webkit-text-fill-color: #7dd3fc; }
-        .cta-section p { color: rgba(255,255,255,0.45); font-size: 1rem; margin-bottom: 2.4rem; }
+        .cta-section h2 { font-family: var(--font-serif); font-size: clamp(2.2rem, 5vw, 3.8rem); color: var(--ink); letter-spacing: -0.02em; margin-bottom: 1rem; line-height: 1.1; }
+        .cta-section h2 em { font-style: italic; color: var(--gold); -webkit-text-fill-color: var(--gold); }
+        .cta-section p { color: var(--muted); font-size: 1rem; margin-bottom: 2.4rem; }
         .cta-buttons { display: flex; gap: 0.9rem; justify-content: center; flex-wrap: wrap; }
         .btn-cta-primary {
           padding: 0.88rem 2.2rem;
-          background: linear-gradient(135deg, #0ea5e9, #38bdf8);
+          background: linear-gradient(135deg, var(--accent), var(--accent2));
           border: none; border-radius: 10px;
           font-family: var(--font-sans); font-size: 0.95rem; font-weight: 700;
-          color: #0a1929; cursor: pointer;
-          box-shadow: 0 8px 28px rgba(14,165,233,0.35);
+          color: #fff; cursor: pointer;
+          box-shadow: 0 8px 28px rgba(15,61,46,0.35);
           transition: transform 0.2s, box-shadow 0.2s;
         }
-        .btn-cta-primary:hover { transform: translateY(-3px); box-shadow: 0 14px 36px rgba(14,165,233,0.45); }
+        .btn-cta-primary:hover { transform: translateY(-3px); box-shadow: 0 14px 36px rgba(15,61,46,0.45); }
         .btn-cta-ghost {
           padding: 0.88rem 2.2rem;
-          background: rgba(255,255,255,0.07);
-          border: 1.5px solid rgba(255,255,255,0.18);
+          background: transparent;
+          border: 1.5px solid var(--border-med);
           border-radius: 10px;
           font-family: var(--font-sans); font-size: 0.95rem; font-weight: 600;
-          color: rgba(255,255,255,0.85); cursor: pointer;
+          color: var(--ink3); cursor: pointer;
           transition: background 0.2s, border-color 0.2s;
         }
-        .btn-cta-ghost:hover { background: rgba(255,255,255,0.13); border-color: rgba(255,255,255,0.3); }
+        .btn-cta-ghost:hover { background: var(--blue-lt); border-color: var(--accent); }
 
-        /* ────── FOOTER ────── */
+        /* ------ FOOTER ------ */
         footer {
-          background: #030810;
+          background: var(--accent);
           padding: 1.8rem 2.5rem;
           display: flex; align-items: center;
           justify-content: space-between; flex-wrap: wrap; gap: 1rem;
-          border-top: 1px solid rgba(255,255,255,0.06);
+          border-top: 1px solid rgba(255,255,255,0.08);
         }
         .f-logo {
           display: inline-flex;
           align-items: center;
           color: #f0f6ff;
           --brand-wordmark-base: #f0f6ff;
-          --brand-wordmark-accent: #38bdf8;
+          --brand-wordmark-accent: var(--gold);
           --brand-wordmark-size: 1.3rem;
           --brand-wordmark-weight: 400;
           --brand-wordmark-letter-spacing: -0.03em;
           --brand-wordmark-gap: 0.18rem;
         }
-        footer p { color: rgba(255,255,255,0.25); font-size: 0.75rem; }
+        footer p { color: rgba(255,255,255,0.45); font-size: 0.75rem; }
         .f-links { display: flex; gap: 1.5rem; }
-        .f-links a { color: rgba(255,255,255,0.28); text-decoration: none; font-size: 0.75rem; transition: color 0.2s; }
-        .f-links a:hover { color: #38bdf8; }
+        .f-links a { color: rgba(255,255,255,0.5); text-decoration: none; font-size: 0.75rem; transition: color 0.2s; }
+        .f-links a:hover { color: var(--gold); }
 
-        /* ────── RESPONSIVE ────── */
+        /* ------ RESPONSIVE ------ */
         @media (max-width: 1100px) {
           .nav { padding: 0 1.5rem; }
           .nav-links { margin-left: 1.4rem; }
@@ -1391,9 +1562,15 @@ export default function Home() {
           .nav-links, .status-pill { display: none; }
           .hero { grid-template-columns: 1fr; min-height: auto; padding: 3.5rem 1.4rem 2rem; }
           .hero-card-col { display: none; }
+          .specialties-bar { gap: 1rem; }
+          .ticker-label { padding-left: 1.4rem; }
           .upload-section { grid-template-columns: 1fr; padding: 4rem 1.4rem; gap: 2.5rem; }
           .lab-section { grid-template-columns: 1fr; padding: 4rem 1.4rem; gap: 2.5rem; }
+          .testimonials-section { padding: 0 1.4rem 4rem; }
+          .testimonials-grid { grid-template-columns: 1fr; }
+          .compliance-section { padding: 2.2rem 1.4rem; }
           .stats-band { gap: 2rem; padding: 2rem 1.5rem; }
+          .compliance-inner { flex-direction: column; align-items: flex-start; }
           .alert-card { grid-template-columns: auto 1fr; }
           .alert-badge { display: none; }
           .hero-sub, .section-sub { max-width: none; }
@@ -1458,6 +1635,9 @@ export default function Home() {
 
           .upload-section,
           .lab-section { padding: 3rem 1rem; gap: 2rem; }
+          .specialties-bar { flex-direction: column; align-items: flex-start; padding: 0.85rem 0 0.65rem; }
+          .ticker-label { padding-left: 1rem; }
+          .ticker-wrap { width: 100%; }
           .drop-zone { padding: 2.25rem 1.1rem; }
           .preview-grid { grid-template-columns: 1fr; }
           .drop-icon-wrap {
@@ -1548,16 +1728,23 @@ export default function Home() {
         }
       `}</style>
 
-      {/* ── GRID BG ── */}
+      {/* -- GRID BG -- */}
       <MedScanChrome
         dark={dark}
         statusLabel="System Operational"
         onToggleTheme={toggleTheme}
         onBrandClick={scrollToTop}
+        topBarItems={[
+          { label: "Neural Engine Active", live: true },
+          { label: "Clinical Support: 1800-MED-SCAN", icon: "Call" },
+          { label: "Available 24 x 7", icon: "Now" },
+        ]}
+        topBarBadge="HIPAA COMPLIANT"
         navLinks={[
-          { label: "Access Flow", href: "#scan" },
+          { label: "Scan a Report", href: "#scan" },
           { label: "Features", href: "#features" },
           { label: "Lab Analysis", href: "#labs" },
+          { label: "About", href: "#about" },
         ]}
         secondaryAction={{
           label: "Sign In",
@@ -1565,37 +1752,39 @@ export default function Home() {
           onClick: () => openWorkspace("login"),
         }}
         primaryAction={{
-          label: "Get Started →",
+          label: "Get Started ->",
           variant: "solid",
           onClick: () => openWorkspace("signup"),
         }}
+        hideStatusOnMobile
       >
 
-      {/* ────── NAV ────── */}
+      {/* ------ NAV ------ */}
 
-      {/* ────── HERO ────── */}
-      <section className="hero">
+      {/* ------ HERO ------ */}
+      <section className="hero" id="about">
         {/* left */}
         <div>
-          <div className="hero-eyebrow">🏥 Clinical AI Platform</div>
+          <div className="hero-eyebrow">Clinical AI Platform</div>
           <h1>
-            Understand Your<br />
-            <span className="highlight">Medical Reports</span><br />
-            Instantly
+            Understand Every<br />
+            <span className="highlight">Medical Report</span><br />
+            With Precision
           </h1>
           <p className="hero-sub">
-            Learn how MediScan AI turns prescriptions and lab reports into clear, useful
-            guidance. Upload your first report free, then continue in your private
-            workspace to save history, use assistant chat, and unlock more uploads.
+            MediScan AI reads prescriptions and lab reports with clinical accuracy, then
+            turns the result into plain-language guidance. Upload your first report free,
+            then continue in your private workspace with saved history, assistant chat,
+            and secure follow-up tools.
           </p>
           <div className="hero-ctas">
             <button className="btn-hero-primary" onClick={() => scrollToSection("scan")}>
-              See Access Flow
+              Scan a Report
             </button>
             <button className="btn-hero-ghost" onClick={() => openWorkspace("login")}>Sign In</button>
           </div>
           <div className="trust-badges">
-            {["🔒 HIPAA Compliant", "🧪 98.4% OCR Accuracy", "🌐 3 Languages", "⚡ <2s Analysis"].map(t => (
+            {["HIPAA Compliant", "98.4% OCR Accuracy", "3 Languages", "<2s Analysis"].map(t => (
               <div key={t} className="trust-badge">{t}</div>
             ))}
           </div>
@@ -1607,10 +1796,10 @@ export default function Home() {
             {/* header */}
             <div className="pc-header">
               <div style={{ display: "flex", alignItems: "center", gap: "0.75rem" }}>
-                <div className="pc-avatar">👤</div>
+                <div className="pc-avatar">RS</div>
                 <div>
                   <div className="pc-name">Rahul Sharma</div>
-                  <div className="pc-meta">PID-2025-00847 · Male, 34y · O+</div>
+                  <div className="pc-meta">PID-2025-00847 · Male, 34y · O+ · Diabetic</div>
                 </div>
               </div>
               <div className="pc-live">
@@ -1649,7 +1838,7 @@ export default function Home() {
               {[
                 { l: "BP",    v: "128/84", u: "mmHg", pct: 65, c: "#0369a1" },
                 { l: "Pulse", v: "78",     u: "bpm",  pct: 52, c: "#dc2626" },
-                { l: "SpO₂", v: "98",     u: "%",    pct: 98, c: "#16a34a" },
+                { l: "SpO2", v: "98",     u: "%",    pct: 98, c: "#16a34a" },
               ].map(x => (
                 <div className="pc-vital" key={x.l}>
                   <div className="pc-vital-label">{x.l}</div>
@@ -1683,14 +1872,14 @@ export default function Home() {
             </div>
 
             <div className="pc-footer">
-              <div className="ai-chip">🤖 AI</div>
+              <div className="ai-chip">AI</div>
               <span className="pc-footer-txt">2 critical values · Drug check pending</span>
             </div>
           </div>
         </div>
       </section>
 
-      {/* ────── STATS ────── */}
+      {/* ------ STATS ------ */}
       <div className="stats-band">
         {stats.map(s => (
           <div className="stat-item" key={s.l}>
@@ -1700,7 +1889,21 @@ export default function Home() {
         ))}
       </div>
 
-      {/* ────── UPLOAD ────── */}
+      <div className="specialties-bar">
+        <div className="ticker-label">Specialties</div>
+        <div className="ticker-wrap">
+          <div className="ticker-track">
+            {[...specialties, ...specialties].map((s, i) => (
+              <div className="ticker-item" key={`${s}-${i}`}>
+                <span className="ticker-dot" />
+                {s}
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      {/* ------ UPLOAD ------ */}
       <div className="upload-section" id="scan">
         {/* left: drop zone */}
         <div>
@@ -1732,7 +1935,7 @@ export default function Home() {
                 style={{ display: "none" }}
                 onChange={e => selectLandingFile(e.target.files?.[0] || null)}
               />
-              <div className="drop-icon-wrap">{file ? "✅" : guestPreviewLocked ? "🔒" : signedIn ? "📂" : "🔬"}</div>
+              <div className="drop-icon-wrap">{file ? "OK" : guestPreviewLocked ? "LOCK" : signedIn ? "OPEN" : "SCAN"}</div>
               <div className="drop-title">{dropTitle}</div>
               <div className="drop-sub">{dropSubtitle}</div>
               {!file && (
@@ -1744,7 +1947,7 @@ export default function Home() {
 
             {file && (
               <div className="file-selected">
-                📄 {file.name}
+                File: {file.name}
                 <button
                   className="file-remove"
                   onClick={e => {
@@ -1770,7 +1973,7 @@ export default function Home() {
                     className={`lang-btn${lang === l ? " active" : ""}`}
                     onClick={() => setLang(l)}
                   >
-                    {l === "en" ? "🇬🇧 English" : l === "hi" ? "🇮🇳 Hindi" : "🤝 Hinglish"}
+                    {l === "en" ? "English" : l === "hi" ? "Hindi" : "Hinglish"}
                   </button>
                 ))}
               </div>
@@ -1941,7 +2144,7 @@ export default function Home() {
         </div>
       </div>
 
-      {/* ────── FEATURES ────── */}
+      {/* ------ FEATURES ------ */}
       <div className="features-section" id="features">
         <div className="features-inner">
           <div className="features-head">
@@ -1954,7 +2157,7 @@ export default function Home() {
               <div
                 key={f.title}
                 className="feature-card"
-                style={{ "--fc-accent": f.accent } as React.CSSProperties}
+                style={{ "--fc-accent": f.accent } as CSSProperties}
                 role="button"
                 tabIndex={0}
                 aria-label={`Create an account to use ${f.title}`}
@@ -1976,7 +2179,28 @@ export default function Home() {
         </div>
       </div>
 
-      {/* ────── LAB DEMO ────── */}
+      <div className="testimonials-section">
+        <div className="features-inner">
+          <div className="features-head">
+            <div className="section-eyebrow">Clinical Testimonials</div>
+            <h2 className="section-h">Trusted by Clinicians<br />And Patients Alike</h2>
+          </div>
+          <div className="testimonials-grid">
+            {testimonials.map(t => (
+              <div className="tcard" key={t.name}>
+                <div className="tcard-avatar">{t.name.split(" ").map(part => part[0]).slice(0, 2).join("")}</div>
+                <p className="tcard-text">&ldquo;{t.text}&rdquo;</p>
+                <div className="tcard-name">{t.name}</div>
+                <div className="tcard-role">{t.role}</div>
+                <div className="tcard-stars">★★★★★</div>
+                <div className="tcard-verified">Verified User</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      {/* ------ LAB DEMO ------ */}
       <div className="lab-section" id="labs">
         <div>
           <div className="section-eyebrow">Lab Intelligence</div>
@@ -1987,9 +2211,9 @@ export default function Home() {
           </p>
           <div className="lab-bullets">
             {[
-              { icon: "🔴", text: "Critical HIGH values flagged with recommended next steps" },
-              { icon: "🟠", text: "Borderline LOW values highlighted for close monitoring" },
-              { icon: "🟢", text: "Normal range values confirmed with reassurance" },
+              { icon: "High", text: "Critical HIGH values flagged with recommended next steps" },
+              { icon: "Low", text: "Borderline LOW values highlighted for close monitoring" },
+              { icon: "OK", text: "Normal range values confirmed with reassurance" },
             ].map(i => (
               <div key={i.text} className="lab-bullet">
                 <span className="lab-bullet-icon">{i.icon}</span> {i.text}
@@ -2001,7 +2225,7 @@ export default function Home() {
         <div className="lab-table">
           <div className="lt-head">
             <div className="lt-head-left">
-              <span className="lt-icon">🧪</span>
+              <span className="lt-icon">Lab</span>
               <span className="lt-title">Comprehensive Blood Report</span>
             </div>
             <span className="lt-date">23 Mar 2025</span>
@@ -2020,16 +2244,32 @@ export default function Home() {
             </div>
           ))}
           <div className="lt-foot">
-            <span>🤖</span>
+            <span>AI</span>
             <span>AI flagged <strong style={{ color: "var(--red)" }}>3 abnormal values</strong> · Tap for explanation</span>
           </div>
         </div>
       </div>
 
-      {/* ────── ALERT ────── */}
+      <div className="compliance-section">
+        <div className="compliance-inner">
+          <div>
+            <div className="compliance-title">Enterprise-Grade Security And Compliance</div>
+            <div className="compliance-sub">
+              Patient data encrypted at rest and in transit, with privacy-first handling across the report workflow.
+            </div>
+          </div>
+          <div className="compliance-badges">
+            {["HIPAA Compliant", "AES-256 Encrypted", "Clinically Grounded", "DPDP Ready"].map(b => (
+              <div className="cbadge" key={b}>{b}</div>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      {/* ------ ALERT ------ */}
       <div className="alert-wrap">
         <div className="alert-card">
-          <div className="alert-icon">🚨</div>
+          <div className="alert-icon">AL</div>
           <div>
             <div className="alert-title">Emergency Alert System</div>
             <div className="alert-desc">
@@ -2042,7 +2282,7 @@ export default function Home() {
         </div>
       </div>
 
-      {/* ────── CTA ────── */}
+      {/* ------ CTA ------ */}
       <div className="cta-section">
         <div className="cta-inner">
           <h2>Your Health,<br /><em>Decoded</em></h2>
@@ -2056,7 +2296,7 @@ export default function Home() {
         </div>
       </div>
 
-      {/* ────── FOOTER ────── */}
+      {/* ------ FOOTER ------ */}
       <footer>
         <div>
           <div className="f-logo">
@@ -2079,3 +2319,4 @@ export default function Home() {
     </>
   );
 }
+

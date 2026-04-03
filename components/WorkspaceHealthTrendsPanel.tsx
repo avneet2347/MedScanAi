@@ -47,20 +47,20 @@ const TRACKED_METRICS: MetricCardTone[] = [
   {
     key: "blood_glucose",
     label: "Glucose",
-    lineColor: "#0284c7",
-    glowColor: "rgba(2, 132, 199, 0.16)",
+    lineColor: "#1e6048",
+    glowColor: "rgba(74, 140, 110, 0.16)",
   },
   {
     key: "cholesterol",
     label: "Cholesterol",
-    lineColor: "#d97706",
-    glowColor: "rgba(217, 119, 6, 0.16)",
+    lineColor: "#f59e0b",
+    glowColor: "rgba(245, 158, 11, 0.16)",
   },
   {
     key: "hemoglobin",
     label: "Hemoglobin",
-    lineColor: "#dc2626",
-    glowColor: "rgba(220, 38, 38, 0.16)",
+    lineColor: "#ef4444",
+    glowColor: "rgba(239, 68, 68, 0.16)",
   },
 ];
 
@@ -511,8 +511,8 @@ export default function WorkspaceHealthTrendsPanel({
           justify-content: center;
           border-radius: 999px;
           padding: 8px 12px;
-          border: 1px solid rgba(14, 165, 233, 0.22);
-          background: rgba(14, 165, 233, 0.12);
+          border: 1px solid rgba(74, 140, 110, 0.22);
+          background: rgba(74, 140, 110, 0.12);
           color: var(--ws-accent);
           font-size: 0.76rem;
           font-weight: 700;
@@ -543,7 +543,7 @@ export default function WorkspaceHealthTrendsPanel({
 
         .trend-card {
           --trend-line: var(--ws-accent);
-          --trend-glow: rgba(14, 165, 233, 0.16);
+          --trend-glow: rgba(74, 140, 110, 0.16);
           border: 1px solid var(--ws-border);
           border-radius: 24px;
           padding: 18px;
@@ -726,7 +726,7 @@ export default function WorkspaceHealthTrendsPanel({
         .trend-stable,
         .trend-mixed {
           color: var(--ws-accent);
-          background: rgba(14, 165, 233, 0.12);
+          background: rgba(74, 140, 110, 0.12);
         }
 
         @media (max-width: 720px) {

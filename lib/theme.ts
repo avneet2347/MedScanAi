@@ -1,11 +1,11 @@
 export const THEME_STORAGE_KEY = "ms-theme";
 export const THEME_CHANGE_EVENT = "medscan:theme-change";
-export const DEFAULT_THEME = "dark";
+export const DEFAULT_THEME = "light";
 
 export type ThemeMode = "dark" | "light";
 
 export function normalizeTheme(value?: string | null): ThemeMode {
-  return value === "light" ? "light" : DEFAULT_THEME;
+  return value === "dark" || value === "light" ? value : DEFAULT_THEME;
 }
 
 export function applyTheme(theme: ThemeMode) {
@@ -60,7 +60,10 @@ export function getThemeBootstrapScript() {
   return `
     (function() {
       try {
-        var theme = localStorage.getItem("${THEME_STORAGE_KEY}") === "light" ? "light" : "${DEFAULT_THEME}";
+        var storedTheme = localStorage.getItem("${THEME_STORAGE_KEY}");
+        var theme = storedTheme === "dark" || storedTheme === "light"
+          ? storedTheme
+          : "${DEFAULT_THEME}";
         var body = document.body;
         if (!body) return;
         body.classList.remove("dark", "light");

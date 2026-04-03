@@ -1,21 +1,22 @@
 import { Suspense } from "react";
-import { DM_Sans, DM_Serif_Display, JetBrains_Mono } from "next/font/google";
+import { Cormorant_Garamond, DM_Mono, Outfit } from "next/font/google";
 import AuthPageClient from "@/components/AuthPageClient";
 
-const sans = DM_Sans({
+const sans = Outfit({
   subsets: ["latin"],
   variable: "--workspace-font-sans",
 });
 
-const serif = DM_Serif_Display({
+const serif = Cormorant_Garamond({
   subsets: ["latin"],
-  weight: "400",
   variable: "--workspace-font-serif",
+  weight: ["400", "500", "600", "700"],
 });
 
-const mono = JetBrains_Mono({
+const mono = DM_Mono({
   subsets: ["latin"],
   variable: "--workspace-font-mono",
+  weight: ["400", "500"],
 });
 
 export default function LoginPage() {

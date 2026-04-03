@@ -11,6 +11,12 @@ type ChromeNavLink = {
   active?: boolean;
 };
 
+type ChromeTopBarItem = {
+  label: string;
+  icon?: ReactNode;
+  live?: boolean;
+};
+
 type ChromeAction = {
   label: string;
   variant: "outline" | "solid" | "icon";
@@ -26,6 +32,8 @@ type Props = {
   statusLabel: string;
   onToggleTheme: () => void;
   onBrandClick?: () => void;
+  topBarItems?: ChromeTopBarItem[];
+  topBarBadge?: string;
   navLinks?: ChromeNavLink[];
   secondaryAction?: ChromeAction;
   primaryAction?: ChromeAction;
@@ -73,6 +81,8 @@ export default function MedScanChrome({
   statusLabel,
   onToggleTheme,
   onBrandClick,
+  topBarItems = [],
+  topBarBadge,
   navLinks = [],
   secondaryAction,
   primaryAction,
@@ -80,9 +90,29 @@ export default function MedScanChrome({
   hideStatusOnMobile = false,
   children,
 }: Props) {
+  const showTopBar = topBarItems.length > 0 || Boolean(topBarBadge);
+
   return (
     <div className={styles.scope}>
       <div className={styles.bgGrid} />
+
+      {showTopBar ? (
+        <div className={styles.topBar}>
+          <div className={styles.topBarLeft}>
+            {topBarItems.map((item) => (
+              <div key={item.label} className={styles.topBarItem}>
+                {item.live ? (
+                  <span className={styles.liveDot} aria-hidden="true" />
+                ) : item.icon ? (
+                  <span className={styles.topBarIcon}>{item.icon}</span>
+                ) : null}
+                <span>{item.label}</span>
+              </div>
+            ))}
+          </div>
+          {topBarBadge ? <span className={styles.topBarBadge}>{topBarBadge}</span> : null}
+        </div>
+      ) : null}
 
       <nav className={styles.nav}>
         <button type="button" className={styles.brand} onClick={onBrandClick} aria-label="Go to MedScan home">

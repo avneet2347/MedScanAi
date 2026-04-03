@@ -83,7 +83,7 @@
 }
 
 .windowDotExpand {
-  background: #34d399;
+  background: #22c55e;
 }
 
 .chromeLabel {
@@ -248,35 +248,35 @@
 .toneLow {
   --tone-bg: rgba(20, 184, 166, 0.12);
   --tone-border: rgba(13, 148, 136, 0.22);
-  --tone-text: #0f766e;
+  --tone-text: #22c55e;
   --tone-soft: rgba(240, 253, 250, 0.98);
 }
 
 .toneModerate {
   --tone-bg: rgba(250, 204, 21, 0.18);
   --tone-border: rgba(202, 138, 4, 0.24);
-  --tone-text: #a16207;
+  --tone-text: #f59e0b;
   --tone-soft: rgba(254, 252, 232, 0.98);
 }
 
 .toneHigh {
   --tone-bg: rgba(251, 146, 60, 0.16);
   --tone-border: rgba(234, 88, 12, 0.22);
-  --tone-text: #c2410c;
+  --tone-text: #f59e0b;
   --tone-soft: rgba(255, 247, 237, 0.98);
 }
 
 .toneCritical {
   --tone-bg: rgba(248, 113, 113, 0.15);
   --tone-border: rgba(220, 38, 38, 0.24);
-  --tone-text: #b91c1c;
+  --tone-text: #ef4444;
   --tone-soft: rgba(254, 242, 242, 0.98);
 }
 
 .chipAccent {
-  background: rgba(59, 130, 246, 0.12);
-  border-color: rgba(37, 99, 235, 0.18);
-  color: #2563eb;
+  background: rgba(14, 165, 233, 0.12);
+  border-color: rgba(14, 165, 233, 0.18);
+  color: #0ea5e9;
 }
 
 .reopenButton {
@@ -305,7 +305,7 @@
 }
 
 .reopenEyebrow {
-  color: #7dd3fc;
+  color: #e0f2fe;
   font-size: 11px;
   font-weight: 800;
   letter-spacing: 0.16em;
@@ -555,15 +555,16 @@
 
 .primaryButton {
   padding: 9px 14px;
-  border-color: rgba(2, 132, 199, 0.2);
-  background: linear-gradient(135deg, var(--accent, #0369a1), var(--accent2, #0ea5e9));
+  border-color: rgba(14, 165, 233, 0.2);
+  background: #0ea5e9;
   color: #ffffff;
-  box-shadow: 0 12px 30px rgba(3, 105, 161, 0.2);
+  box-shadow: 0 12px 30px rgba(14, 165, 233, 0.2);
 }
 
 .primaryButton:hover {
   transform: translateY(-1px);
-  box-shadow: 0 16px 34px rgba(3, 105, 161, 0.26);
+  background: #0284c7;
+  box-shadow: 0 16px 34px rgba(14, 165, 233, 0.26);
 }
 
 .pillGrid,
@@ -628,8 +629,8 @@
   min-width: 52px;
   padding: 6px 10px;
   border-radius: 999px;
-  background: rgba(2, 132, 199, 0.12);
-  color: #0369a1;
+  background: rgba(14, 165, 233, 0.12);
+  color: #0ea5e9;
   font-size: 11px;
   font-weight: 800;
 }
@@ -692,9 +693,9 @@
 }
 
 .pillButtonActive {
-  border-color: rgba(2, 132, 199, 0.2);
+  border-color: rgba(14, 165, 233, 0.2);
   background: rgba(14, 165, 233, 0.12);
-  color: #0369a1;
+  color: #0ea5e9;
 }
 
 .emptyState {
@@ -831,14 +832,14 @@
 }
 
 .removeButton {
-  color: #b91c1c;
+  color: #ef4444;
 }
 
 .clearButton {
   padding: 0;
   border: none;
   background: transparent;
-  color: #b91c1c;
+  color: #ef4444;
 }
 
 .monoText {
@@ -851,7 +852,7 @@
 .textInput:focus-visible,
 .selectInput:focus-visible {
   outline: none;
-  border-color: rgba(14, 165, 233, 0.6);
+  border-color: rgba(14, 165, 233, 0.5);
   box-shadow: 0 0 0 4px rgba(14, 165, 233, 0.14);
 }
 
